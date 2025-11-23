@@ -882,7 +882,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "server_hotpatch_example"
+name = "server_hotswap_example"
 version = "0.1.0"
 dependencies = [
  "axum",

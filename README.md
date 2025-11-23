@@ -19,12 +19,14 @@ Command:
 dx serve --hot-patch --target wasm32-unknown-unknown --bundle web
 ```
 
+TODO use package
+
 ## Web server
 
 Command
 
 ```
-TODO
+dx serve --hot-patch --trace --package server_hotswap_example --verbose
 ```
 
 # Ambiguity of wording

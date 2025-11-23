@@ -38,12 +38,6 @@ async fn increment() -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() {
-    dioxus_devtools::serve_subsecond(sub_main).await;
-}
-
-async fn sub_main() {
-    log::info!("Doing initialization");
-
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -51,9 +45,15 @@ async fn sub_main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    dioxus_devtools::serve_subsecond(sub_main).await;
+}
+
+async fn sub_main() {
+    log::info!("Doing initialization");
+
     let app = Router::new()
         .route("/", get(index))
-        .route("/counter", post(increment));
+        .route("/increment", post(increment));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
