@@ -20,6 +20,6 @@ send_wrapper = "0.6.0"
 dioxus-cli-config = { version = "0.7.0-rc.1", features = ["web"] }
 serde_json = { version = "1.0" }
 
-[features]
-default = ["web"]
-web = ["dioxus/web"]
+#[features]
+#default = ["web"]
+#web = ["dioxus/web"]
