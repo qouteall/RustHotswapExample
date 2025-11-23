@@ -8,18 +8,24 @@ wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = [
     "console",
     "Window",
+    "Document",
+    "Element",
     "Location",
     "CloseEvent",
     "MessageEvent",
     "WebSocket"
 ] }
 
-dioxus-devtools = "0.7.0-rc.1"
+subsecond = "0.7.1"
+dioxus-devtools = "0.7.1"
 crossbeam-channel = "0.5.15"
 send_wrapper = "0.6.0"
-dioxus-cli-config = { version = "0.7.0-rc.1", features = ["web"] }
+dioxus-cli-config = { version = "0.7.1", features = ["web"] }
 serde_json = { version = "1.0" }
 
-#[features]
-#default = ["web"]
-#web = ["dioxus/web"]
+dioxus = { version = "0.7.1", features = [] }
+# TODO see how to not depend on dioxus and still make dioxus cli detect its platform is web
+
+[features]
+default = ["web"]
+web = ["dioxus/web"]

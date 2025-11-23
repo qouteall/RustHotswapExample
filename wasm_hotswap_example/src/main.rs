@@ -1,9 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use dioxus::{prelude::*, subsecond};
 use dioxus_devtools::subsecond::apply_patch;
-use dioxus_devtools::{DevserverMsg, HotReloadMsg};
+use dioxus_devtools::{DevserverMsg};
 use wasm_bindgen::prelude::*;
 use web_sys::js_sys::JsString;
 use web_sys::{console, MessageEvent, WebSocket};
@@ -39,7 +38,7 @@ fn init_counter() {
 
     let counter_display = document
         .get_element_by_id("counter")
-        .expect("missing element #counter")
+        .expect("missing element #counter");
 
     let count = Rc::new(RefCell::new(0));
 
@@ -65,7 +64,7 @@ fn init_counter() {
 
 #[cfg(not(debug_assertions))]
 fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
-    // empty
+    // empty in release
 }
 
 // https://github.com/DioxusLabs/dioxus/blob/main/packages/web/src/devtools.rs
