@@ -6,9 +6,24 @@ Hotswapping require some "hacking" of building and linking. Currently it need to
 
 Two examples: 
 
-- In-browser wasm hotswap (hotswap without page refresh needed)
+- In-browser wasm hotswap
 - A simple webserver with hotswap
 
+## In-browser wasm hotswap
+
+Command
+
+```
+dx serve --hot-patch --target wasm32-unknown-unknown --bundle web
+```
+
+## Web server
+
+Command
+
+```
+TODO
+```
 
 # Ambiguity of wording
 

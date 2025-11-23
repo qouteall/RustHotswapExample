@@ -22,10 +22,3 @@ crossbeam-channel = "0.5.15"
 send_wrapper = "0.6.0"
 dioxus-cli-config = { version = "0.7.1", features = ["web"] }
 serde_json = { version = "1.0" }
-
-dioxus = { version = "0.7.1", features = [] }
-# TODO see how to not depend on dioxus and still make dioxus cli detect its platform is web
-
-[features]
-default = ["web"]
-web = ["dioxus/web"]
