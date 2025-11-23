@@ -11,7 +11,9 @@ Two examples:
 
 ## In-browser wasm hotswap
 
-Command
+Hotswap wasm code in browser, without page refresh, without losing Wasm execution state. (currently only singlethreaded wasm32)
+
+Command:
 
 ```
 dx serve --hot-patch --target wasm32-unknown-unknown --bundle web

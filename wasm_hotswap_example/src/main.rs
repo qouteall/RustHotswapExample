@@ -47,8 +47,8 @@ fn init_counter() {
 
     let closure = Closure::<dyn FnMut()>::new(move || {
         subsecond::call(|| {
-            // *count_clone.borrow_mut() += 1;
-            *count_clone.borrow_mut() *= 2;
+            *count_clone.borrow_mut() += 1;
+            // *count_clone.borrow_mut() *= 2;
 
             display_clone.set_text_content(Some(&count_clone.borrow().to_string()));
         })
