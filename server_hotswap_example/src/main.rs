@@ -14,6 +14,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
+    // https://github.com/DioxusLabs/dioxus/issues/4305#issuecomment-3204091426
     dioxus_devtools::serve_subsecond(router_main).await;
 }
 
