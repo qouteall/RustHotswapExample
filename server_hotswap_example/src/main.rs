@@ -8,6 +8,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use futures::FutureExt;
 use serde::Serialize;
 use tower_http::services::ServeDir;
 use tracing::{error, info};
@@ -26,7 +27,9 @@ async fn main() {
     println!("Env vars done");
 
     // https://github.com/DioxusLabs/dioxus/issues/4305#issuecomment-3204091426
-    dioxus_devtools::serve_subsecond(router_main).await;
+    let f =dioxus_devtools::serve_subsecond(router_main);
+    let mut f_boxed = f.boxed_local();
+    f_boxed.as_mut().await;
 }
 
 
