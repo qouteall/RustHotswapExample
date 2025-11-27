@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::{
@@ -12,11 +13,22 @@ use tower_http::services::ServeDir;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use w_boson::enable_backtrace_on_stack_overflow;
+
 #[tokio::main]
 async fn main() {
+    unsafe { enable_backtrace_on_stack_overflow() };
+
+    for (key, value) in env::vars() {
+        println!("{}: {}", key, value);
+    }
+
+    println!("Env vars done");
+
     // https://github.com/DioxusLabs/dioxus/issues/4305#issuecomment-3204091426
     dioxus_devtools::serve_subsecond(router_main).await;
 }
+
 
 async fn router_main() {
     use axum::{Router, routing::get};
@@ -30,5 +42,5 @@ async fn router_main() {
 }
 
 async fn test_route() -> axum::response::Html<&'static str> {
-    "axum works!!!!!".into()
+    "axum works!!!!".into()
 }
