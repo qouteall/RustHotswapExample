@@ -1,8 +1,8 @@
 # Rust hotswap Example
 
-Simple examples of using [subsecond](https://docs.rs/subsecond/0.7.1/subsecond/) hotswap in non-Dioxus projects.
+Simple examples of using [subsecond](https://docs.rs/subsecond/0.7.1/subsecond/) hotswap in non-Dioxus applications.
 
-Hotswapping require some "hacking" of building and linking. Currently it need to be done by Dioxus CLI. Dioxus CLI can be used for non-Dioxus applications.
+Hotswapping require some special building and linking that `cargo` cannot do. It needs to be done by Dioxus CLI. Dioxus CLI can be used for non-Dioxus applications.
 
 Two examples: 
 
