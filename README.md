@@ -16,28 +16,25 @@ Hotswap wasm code in browser, without page refresh, without losing Wasm executio
 Command:
 
 ```
-dx serve --hot-patch --target wasm32-unknown-unknown --bundle web
+dx serve --hot-patch --package wasm_hotswap_example --target wasm32-unknown-unknown --bundle web
 ```
-
-TODO use package
 
 ## Web server
 
 Command
 
 ```
-dx serve --hot-patch --trace --package server_hotswap_example --verbose
+dx serve --hot-patch --package server_hotswap_example
 ```
 
-In Linux or WSL, if it error `collect2: fatal error: cannot find ‘ld’`, then install lld (`sudo apt install lld`). [Issue](https://github.com/DioxusLabs/dioxus/issues/4872)
+(Can add `--trace --verbose` for more logging)
 
-# Ambiguity of wording
+In Linux or WSL, if it errors `collect2: fatal error: cannot find ‘ld’`, then install lld (`sudo apt install lld`). [Issue](https://github.com/DioxusLabs/dioxus/issues/4872)
 
-These 3 things usually refer to the same thing:
+In Windows, it will stackoverflow after a hotswap. The root cause is not yet known.
 
-- Hotswap
-- Hot reload
-- Hotpatch
+---
 
-But in dioxus CLI, "hot reload" means reloading whole application and lose execution state. Hotpatch means apply code change without losing execution state.
+Side note: the "hotswap", "hot reload" and "hotpatch" mostly refer to the same thing. But sometimes "hot reload" refers to reloding code and losing execution state. The "hotswap" here means applying code change while keeping executing state.
+
 
