@@ -23,7 +23,7 @@ On Windows, it currently cannot build due to a bug in Dioxus CLI. Fixed in [this
 
 The `index.html` will be used by Dioxus CLI for serving web page.
 
-## Web server
+## Web server (WIP)
 
 Command
 
@@ -36,6 +36,8 @@ dx serve --hot-patch --package server_hotswap_example
 In Linux or WSL, if it errors `collect2: fatal error: cannot find ‘ld’`, then install lld (`sudo apt install lld`). [Issue](https://github.com/DioxusLabs/dioxus/issues/4872)
 
 In Windows, it will stackoverflow after a hotswap. The root cause is not yet known.
+
+It will deadloop if ran without connecting to dev server (https://github.com/DioxusLabs/dioxus/issues/4305#issuecomment-3585614449).
 
 ---
 

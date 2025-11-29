@@ -2,27 +2,12 @@ use std::env;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::{
-    body::Body,
-    http::{Response, StatusCode, Uri},
-    response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use futures::FutureExt;
-use serde::Serialize;
-use tower_http::services::ServeDir;
-use tracing::{error, info};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
-
-    for (key, value) in env::vars() {
-        println!("{}: {}", key, value);
-    }
-
-    println!("Env vars done");
-
     // https://github.com/DioxusLabs/dioxus/issues/4305#issuecomment-3204091426
     let f =dioxus_devtools::serve_subsecond(router_main);
     let mut f_boxed = f.boxed_local();
