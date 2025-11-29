@@ -19,6 +19,8 @@ Command:
 dx serve --hot-patch --package wasm_hotswap_example --target wasm32-unknown-unknown --bundle web
 ```
 
+On Windows, it currently cannot build due to a bug in Dioxus CLI. Fixed in [this PR](https://github.com/DioxusLabs/dioxus/pull/5010).
+
 ## Web server
 
 Command
