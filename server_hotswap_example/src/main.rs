@@ -14,11 +14,8 @@ use tower_http::services::ServeDir;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use w_boson::enable_backtrace_on_stack_overflow;
-
 #[tokio::main]
 async fn main() {
-    unsafe { enable_backtrace_on_stack_overflow() };
 
     for (key, value) in env::vars() {
         println!("{}: {}", key, value);

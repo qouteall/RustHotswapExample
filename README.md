@@ -29,6 +29,8 @@ Command
 dx serve --hot-patch --trace --package server_hotswap_example --verbose
 ```
 
+In Linux or WSL, if it error `collect2: fatal error: cannot find ‘ld’`, then install lld (`sudo apt install lld`). [Issue](https://github.com/DioxusLabs/dioxus/issues/4872)
+
 # Ambiguity of wording
 
 These 3 things usually refer to the same thing:
