@@ -23,7 +23,7 @@ Command:
 dx serve --hot-patch --package wasm_hotswap_example --target wasm32-unknown-unknown --bundle web
 ```
 
-On Windows, it currently cannot build due to a bug in Dioxus CLI. Fixed in [this PR](https://github.com/DioxusLabs/dioxus/pull/5010).
+On Windows, it currently cannot build due to a bug in Dioxus CLI. Fixed in [this PR](https://github.com/DioxusLabs/dioxus/pull/5010) (not yet merged).
 
 The `index.html` will be used by Dioxus CLI for serving web page.
 
@@ -37,7 +37,7 @@ dx serve --hot-patch --package server_hotswap_example
 
 (Can add `--trace --verbose` for more logging)
 
-In Linux or WSL, if it errors `collect2: fatal error: cannot find ‘ld’`, then install lld (`sudo apt install lld`). [Issue](https://github.com/DioxusLabs/dioxus/issues/4872)
+In Linux or WSL, if it errors `collect2: fatal error: cannot find ‘ld’`, install lld (`sudo apt install lld`). [Issue](https://github.com/DioxusLabs/dioxus/issues/4872)
 
 In Windows, it will stackoverflow after a hotswap. The root cause is not yet known.
 
