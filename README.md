@@ -4,6 +4,10 @@ Simple examples of using [subsecond](https://docs.rs/subsecond/0.7.1/subsecond/)
 
 Hotswapping require some special building and linking that `cargo` cannot do. It needs to be done by Dioxus CLI. Dioxus CLI can be used for non-Dioxus applications.
 
+In https://github.com/DioxusLabs/dioxus/releases/tag/v0.7.0 :
+
+> The infrastructure to support Subsecond is quite complex. Currently, we plan to only ship the Subsecond engine within the Dioxus CLI itself with a long-term plan to spin the engine out into its own crate. For now, we still want the ecosystem to experience the magic of Subsecond, so we’ve made the CLI compatible with non-dioxus projects and removed “dioxus” branding when not serving a dioxus project.
+
 Two examples: 
 
 - In-browser wasm hotswap
