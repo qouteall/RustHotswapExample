@@ -2,5 +2,6 @@
 resolver = "2"
 members = [
     "wasm_hotswap_example",
-    "server_hotswap_example"
+    "server_hotswap_example",
+    "wasm_mt_hotswap_example"
 ]

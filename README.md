@@ -45,6 +45,27 @@ It will deadloop if ran without connecting to dev server (https://github.com/Dio
 
 Note that it will restart internal axum server after hotswap. It cannot keep long connections (e.g. websocket of webserver) after hotpatch. It can be solved by changing the hotswap boundary (then hotpatch cannot add or remove Restful APIs). TODO
 
+## In-borwser multi-threaded wasm hotswap (work-in-progress)
+
+Changed from this example https://github.com/wasm-bindgen/wasm-bindgen/tree/main/examples/raytrace-parallel
+
+I changed it to use ES module.
+
+It uses nightly Rust.
+
+Bash
+
+```
+CARGO_TARGET_wasm32-unknown-unknown_RUSTFLAGS='-Ctarget-feature=+atomics -Clink-args=--shared-memory -Clink-args=--max-memory=1073741824 -Clink-args=--import-memory -Clink-args=--export=__wasm_init_tls -Clink-args=--export=__tls_size -Clink-args=--export=__tls_align -Clink-args=--export=__tls_base' dx serve --hot-patch --target wasm32-unknown-unknown --bundle web --cargo-args " -Zbuild-std=std,panic_abort" --package wasm_mt_hotswap_example
+```
+
+Powershell
+
+```
+$env:CARGO_TARGET_wasm32-unknown-unknown_RUSTFLAGS='-Ctarget-feature=+atomics -Clink-args=--shared-memory -Clink-args=--max-memory=1073741824 -Clink-args=--import-memory -Clink-args=--export=__wasm_init_tls -Clink-args=--export=__tls_size -Clink-args=--export=__tls_align -Clink-args=--export=__tls_base'; dx serve --hot-patch --target wasm32-unknown-unknown --bundle web --cargo-args " -Zbuild-std=std,panic_abort"  --package wasm_mt_hotswap_example
+```
+
+
 ---
 
 Side note: the "hotswap", "hot reload" and "hotpatch" mostly refer to the same thing. But sometimes "hot reload" refers to reloding code and losing execution state. The "hotswap" here means applying code change while keeping executing state.
