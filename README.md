@@ -71,18 +71,13 @@ Note that in `.vscode/settings.json` it adds necessary header for site isolation
 
 Hotswap with dx (not yet working):
 
-Bash
+Go to `wasm_mt_hotswap_example` folder
 
 ```
-CARGO_TARGET_wasm32-unknown-unknown_RUSTFLAGS='-Ctarget-feature=+atomics -Clink-args=--shared-memory -Clink-args=--max-memory=1073741824 -Clink-args=--import-memory -Clink-args=--export=__wasm_init_tls -Clink-args=--export=__tls_size -Clink-args=--export=__tls_align -Clink-args=--export=__tls_base' dx serve --hot-patch --target wasm32-unknown-unknown --bundle web --cargo-args " -Zbuild-std=std,panic_abort" --package wasm_mt_hotswap_example
+dx serve --hot-patch --target wasm32-unknown-unknown --bundle web --cargo-args " -Zbuild-std=std,panic_abort"
 ```
 
-Powershell
-
-```
-$env:CARGO_TARGET_wasm32-unknown-unknown_RUSTFLAGS='-Ctarget-feature=+atomics -Clink-args=--shared-memory -Clink-args=--max-memory=1073741824 -Clink-args=--import-memory -Clink-args=--export=__wasm_init_tls -Clink-args=--export=__tls_size -Clink-args=--export=__tls_align -Clink-args=--export=__tls_base'; dx serve --hot-patch --target wasm32-unknown-unknown --bundle web --cargo-args " -Zbuild-std=std,panic_abort"  --package wasm_mt_hotswap_example
-```
-
+Current issue: `Failed to find main memory offset in WASM module` assets.rs 252 , it seem to be only used for manganis asset handling.
 
 ---
 
