@@ -49,7 +49,7 @@ Note that it will restart internal axum server after hotswap. It cannot keep lon
 
 Changed from this example https://github.com/wasm-bindgen/wasm-bindgen/tree/main/examples/raytrace-parallel
 
-I changed it to use ES module.
+I changed it to use ES module. (Firefox now supports ES module.)
 
 It uses nightly Rust.
 
@@ -65,7 +65,9 @@ wasm-bindgen ../target/wasm32-unknown-unknown/debug/wasm_mt_hotswap_example.wasm
 
 Then copy files in `wasm_mt_hotswap_example/public/*` and `wasm_mt_hotswap/index.html` into `dist/raytrace-parallel` folder.
 
-In VSCode, install live preview plugin
+In VSCode, install live preview plugin, open `dist/raytrace-parallel/index.html` in VSCode, click show-preview on right top corner, then click the icon on the right side of address bar, click "open in browser".
+
+Note that in `.vscode/settings.json` it adds necessary header for site isolation, which is necessary for `SharedArrayBuffer`, which is necessary for wasm multi-threading.
 
 Hotswap with dx (not yet working):
 
