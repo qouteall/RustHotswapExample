@@ -27,7 +27,7 @@ On Windows, it currently cannot build due to a bug in Dioxus CLI. Fixed in [this
 
 The `index.html` will be used by Dioxus CLI for serving web page.
 
-## Web server (WIP)
+## Web server
 
 Command
 
@@ -42,6 +42,8 @@ In Linux or WSL, if it errors `collect2: fatal error: cannot find ‘ld’`, ins
 In Windows, it will stackoverflow after a hotswap. The root cause is not yet known.
 
 It will deadloop if ran without connecting to dev server (https://github.com/DioxusLabs/dioxus/issues/4305#issuecomment-3585614449).
+
+Note that it will restart internal axum server after hotswap. It cannot keep long connections (e.g. websocket of webserver) after hotpatch. It can be solved by changing the hotswap boundary (then hotpatch cannot add or remove Restful APIs). TODO
 
 ---
 
