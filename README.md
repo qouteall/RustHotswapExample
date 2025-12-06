@@ -60,7 +60,7 @@ Go into `wasm_mt_hotswap_example` folder
 ```
 cargo build --target wasm32-unknown-unknown "-Zbuild-std=std,panic_abort" --config "target.wasm32-unknown-unknown.rustflags='-Ctarget-feature=+atomics -Clink-args=--shared-memory -Clink-args=--max-memory=1073741824 -Clink-args=--import-memory -Clink-args=--export=__wasm_init_tls -Clink-args=--export=__tls_size -Clink-args=--export=__tls_align -Clink-args=--export=__tls_base'"
 
-wasm-bindgen ../target/wasm32-unknown-unknown/debug/wasm_mt_hotswap_example.wasm --out-dir ../dist/raytrace-parallel --typescript --target web
+wasm-bindgen ../target/wasm32-unknown-unknown/debug/wasm_mt_hotswap_example.wasm --out-dir ../dist/raytrace-parallel/wasm --typescript --target web
 ```
 
 Then copy files in `wasm_mt_hotswap_example/public/*` and `wasm_mt_hotswap/index.html` into `dist/raytrace-parallel` folder.
@@ -74,7 +74,7 @@ Hotswap with dx (not yet working):
 Go to `wasm_mt_hotswap_example` folder
 
 ```
-dx serve --hot-patch --target wasm32-unknown-unknown --bundle web --cargo-args " -Zbuild-std=std,panic_abort"
+dx serve --hot-patch --target wasm32-unknown-unknown --bundle web "--cargo-args=-Zbuild-std=std,panic_abort" --inject-loading-scripts=false
 ```
 
 ---

@@ -1,5 +1,5 @@
 
-import wbg_init, { child_entry_point } from './wasm_mt_hotswap_example.js';
+import wbg_init, { child_entry_point } from './wasm/wasm_mt_hotswap_example.js';
 
 // Wait for the main thread to send us the shared module/memory. Once we've got
 // it, initialize it all with the `wasm_bindgen` global we imported via

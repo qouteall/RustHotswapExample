@@ -1,4 +1,4 @@
-import wasm_bindgen, { Scene, WorkerPool } from './wasm_mt_hotswap_example.js'
+import wasm_bindgen, { Scene, WorkerPool } from './wasm/wasm_mt_hotswap_example.js'
 
 const button = document.getElementById('render');
 const canvas = document.getElementById('canvas');
