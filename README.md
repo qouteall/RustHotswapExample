@@ -77,10 +77,6 @@ Go to `wasm_mt_hotswap_example` folder
 dx serve --hot-patch --target wasm32-unknown-unknown --bundle web --cargo-args " -Zbuild-std=std,panic_abort"
 ```
 
-Current issue: `Failed to find main memory offset in WASM module` assets.rs 252 , it seem to be only used for manganis asset handling.
-
-Second issue: the data symbol `_RNvNCNvMNtCsgDosuwQIwjx_3std6threadNtB6_7Builder16spawn_unchecked_03MIN` exists in symbol table and its index is 3 but there are only 3 passive data segments. Maybe it's GC-ed by wasm-bindgen?
-
 ---
 
 Side note: the "hotswap", "hot reload" and "hotpatch" mostly refer to the same thing. But sometimes "hot reload" refers to reloding code and losing execution state. The "hotswap" here means applying code change while keeping executing state.
