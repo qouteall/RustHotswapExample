@@ -181,6 +181,7 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
 #[cfg(debug_assertions)]
 fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
     web_sys::console::info_1(&format!("Initializing hotpatch").into());
+    
 
     // Get the location of the devserver, using the current location plus the /_dioxus path
     // The idea here being that the devserver is always located on the /_dioxus behind a proxy
@@ -200,7 +201,6 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
 
     ws.set_onmessage(Some(
         Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
-            
             let Ok(text) = e.data().dyn_into::<JsString>() else {
                 return;
             };
@@ -212,6 +212,7 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
             match serde_json::from_str::<DevserverMsg>(string) {
                 Ok(DevserverMsg::HotReload(hr)) => {
                     if let Some(jumptable) = hr.clone().jump_table {
+                        // TODO after linking works, change apply_patch to make multi-threaded wasm loading work
                         unsafe { apply_patch(jumptable).unwrap() };
                     }
 
