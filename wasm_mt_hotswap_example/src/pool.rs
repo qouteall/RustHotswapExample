@@ -6,6 +6,7 @@
 //! web workers which can be used to execute `rayon`-style work.
 
 use std::cell::RefCell;
+use std::ptr;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, WorkerOptions};
@@ -122,7 +123,9 @@ impl WorkerPool {
     fn execute(&self, f: impl FnOnce() + Send + 'static) -> Result<Worker, JsValue> {
         let worker = self.worker()?;
         let work = Box::new(Work { func: Box::new(f) });
+        console_log!("Going to submit work with inner pointer {:p}", work.func);
         let ptr = Box::into_raw(work);
+        console_log!("Going to submit work with pointer {:?}", ptr);
         match worker.post_message(&JsValue::from(ptr as u32)) {
             Ok(()) => Ok(worker),
             Err(e) => {
@@ -215,9 +218,12 @@ impl PoolState {
 /// about `worker.js` in general.
 #[wasm_bindgen]
 pub fn child_entry_point(ptr: u32) -> Result<(), JsValue> {
+    console_log!("child entry point with pointer {:?}", (ptr as *mut Work));
     let ptr = unsafe { Box::from_raw(ptr as *mut Work) };
-    let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
+    let inner_addr = ptr::from_ref(&*ptr.func) as *const u8 as u32;
+    console_log!("child entry point with inner pointer {:?}", inner_addr);
     (ptr.func)();
+    let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
     global.post_message(&JsValue::undefined())?;
     Ok(())
 }

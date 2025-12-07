@@ -9,6 +9,7 @@ import wbg_init, { child_entry_point } from './wasm/wasm_mt_hotswap_example.js';
 // so we just do that.
 self.onmessage = event => {
   let [module, memory] = event.data;
+  console.log("worker init", module, memory);
   let initialised = wbg_init({
     module_or_path: module,
     memory: memory
