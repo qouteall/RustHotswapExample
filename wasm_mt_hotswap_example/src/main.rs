@@ -2,7 +2,11 @@ use futures_channel::oneshot;
 use js_sys::{Promise, Uint8ClampedArray, WebAssembly};
 use rayon::prelude::*;
 use wasm_bindgen::prelude::*;
-use web_sys::ImageData;
+use js_sys::JsString;
+use web_sys::{ImageData, console};
+use subsecond::apply_patch;
+use dioxus_devtools::DevserverMsg;
+use web_sys::{MessageEvent, WebSocket};
 
 fn main() {
     // this is just placeholder
@@ -156,4 +160,81 @@ fn image_data(base: usize, len: usize, width: u32, height: u32) -> ImageData {
     let mem = wasm_bindgen::memory().unchecked_into::<WebAssembly::Memory>();
     let mem = Uint8ClampedArray::new(&mem.buffer()).slice(base as u32, (base + len) as u32);
     ImageData::new_with_js_u8_clamped_array_and_sh(&mem, width, height).unwrap()
+}
+
+#[wasm_bindgen(start)]
+pub fn start() {
+    init_hotpatch(Box::new(|| {
+        console::log_1(&"Hotpatched".into());
+    }));
+
+    console::log_1(&"Hello world from Rust WASM!".into());
+}
+
+
+#[cfg(not(debug_assertions))]
+fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
+    // empty in release
+}
+
+// https://github.com/DioxusLabs/dioxus/blob/main/packages/web/src/devtools.rs
+#[cfg(debug_assertions)]
+fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
+    web_sys::console::info_1(&format!("Initializing hotpatch").into());
+
+    // Get the location of the devserver, using the current location plus the /_dioxus path
+    // The idea here being that the devserver is always located on the /_dioxus behind a proxy
+
+    let location = web_sys::window().unwrap().location();
+    let url = format!(
+        "{protocol}//{host}/_dioxus?build_id={build_id}",
+        protocol = match location.protocol().unwrap() {
+            prot if prot == "https:" => "wss:",
+            _ => "ws:",
+        },
+        host = location.host().unwrap(),
+        build_id = dioxus_cli_config::build_id(),
+    );
+
+    let ws = WebSocket::new(&url).unwrap();
+
+    ws.set_onmessage(Some(
+        Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+            
+            let Ok(text) = e.data().dyn_into::<JsString>() else {
+                return;
+            };
+
+            // The devserver messages have some &'static strs in them, so we need to leak the source string
+            let string: String = text.into();
+            let string = Box::leak(string.into_boxed_str());
+
+            match serde_json::from_str::<DevserverMsg>(string) {
+                Ok(DevserverMsg::HotReload(hr)) => {
+                    if let Some(jumptable) = hr.clone().jump_table {
+                        unsafe { apply_patch(jumptable).unwrap() };
+                    }
+
+                    on_hotpatch_callback();
+                }
+
+                Ok(DevserverMsg::Shutdown) => {
+                    web_sys::console::error_1(&"Connection to the devserver was closed".into())
+                }
+
+                Err(e) => web_sys::console::error_1(
+                    &format!("Error parsing devserver message: {}", e).into(),
+                ),
+
+                Ok(e) => {
+                    web_sys::console::info_1(&format!("Ignore devserver message: {:?}", e).into());
+                }
+            }
+        })
+        .into_js_value()
+        .as_ref()
+        .unchecked_ref(),
+    ));
+
+    console::log_1(&"Hotpatch initialized".into());
 }

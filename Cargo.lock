@@ -1653,12 +1653,16 @@ name = "wasm_mt_hotswap_example"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
+ "dioxus-cli-config",
+ "dioxus-devtools",
  "futures-channel-preview",
  "js-sys",
  "rayon",
  "rayon-core",
  "raytracer",
  "serde-wasm-bindgen",
+ "serde_json",
+ "subsecond",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
