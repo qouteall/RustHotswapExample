@@ -74,7 +74,7 @@ Hotswap with dx (not yet working):
 Go to `wasm_mt_hotswap_example` folder
 
 ```
-dx serve --hot-patch --target wasm32-unknown-unknown --bundle web "--cargo-args=-Zbuild-std=std,panic_abort" --inject-loading-scripts=false --cross-origin-policy
+dx serve --hot-patch --target wasm32-unknown-unknown --bundle web "--cargo-args=-Zbuild-std=std,panic_abort" --inject-loading-scripts=false --cross-origin-policy --disable-js-glue-shim
 ```
 
 ---
