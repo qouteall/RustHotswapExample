@@ -3,8 +3,8 @@ use js_sys::{Promise, Uint8ClampedArray, WebAssembly};
 use rayon::prelude::*;
 use wasm_bindgen::prelude::*;
 use js_sys::JsString;
-use web_sys::{ImageData, console};
-use subsecond::apply_patch;
+use web_sys::{ImageData, Response, console};
+use subsecond::{JumpTable, PatchError, apply_patch};
 use dioxus_devtools::DevserverMsg;
 use web_sys::{MessageEvent, WebSocket};
 
@@ -238,4 +238,156 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
     ));
 
     console::log_1(&"Hotpatch initialized".into());
+}
+
+
+
+pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError> {
+    wasm_bindgen_futures::spawn_local(async move {
+        use js_sys::{
+            ArrayBuffer, Object, Reflect,
+            WebAssembly::{self, Memory, Table},
+        };
+        use wasm_bindgen::prelude::*;
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen::UnwrapThrowExt;
+        use wasm_bindgen_futures::JsFuture;
+
+        let funcs: Table = wasm_bindgen::function_table().unchecked_into();
+        let memory: Memory = wasm_bindgen::memory().unchecked_into();
+        let exports: Object = wasm_bindgen::exports().unchecked_into();
+        let buffer: ArrayBuffer = memory.buffer().unchecked_into();
+
+        let path = table.lib.to_str().unwrap();
+
+        web_sys::console::info_1(&format!("Going to load wasm binary: {:?}", path).into());
+
+        if !path.ends_with(".wasm") {
+            web_sys::console::error_1(&"doesn't end with .wasm, ignore".into());
+            return;
+        }
+
+        // Start the fetch of the module
+        let response = web_sys::window().unwrap_throw().fetch_with_str(&path);
+
+        // Wait for the fetch to complete - we need the wasm module size in bytes to reserve in the memory
+        let response: Response = JsFuture::from(response).await.unwrap().unchecked_into();
+
+        // If the status is not success, we bail
+        if !response.ok() {
+            panic!(
+                "Failed to patch wasm module at {} - response failed with: {}",
+                path,
+                response.status_text()
+            );
+        }
+
+        let dl_bytes: ArrayBuffer = JsFuture::from(response.array_buffer().unwrap())
+            .await
+            .unwrap()
+            .unchecked_into();
+
+        // Expand the memory and table size to accommodate the new data and functions
+        //
+        // Normally we wouldn't be able to trust that we are allocating *enough* memory
+        // for BSS segments, but ld emits them in the binary when using import-memory.
+        //
+        // Make sure we align the memory base to the page size
+        // TODO it seems grows too much. only need to grow as size of data section
+        const PAGE_SIZE: u32 = 64 * 1024;
+        let page_count = (buffer.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32;
+        let memory_base = (page_count + 1) * PAGE_SIZE;
+
+        // We need to grow the memory to accommodate the new module
+        memory.grow((dl_bytes.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32 + 1);
+
+        // below need to be done in every web worker
+        
+
+        let module_promise = WebAssembly::compile(dl_bytes.unchecked_ref());
+
+
+        // TODO
+
+
+        // We grow the ifunc table to accommodate the new functions
+        // In theory we could just put all the ifuncs in the jump map and use that for our count,
+        // but there's no guarantee from the jump table that it references "itself"
+        // We might need a sentinel value for each ifunc in the jump map to indicate that it is
+        let table_base = funcs.grow(table.ifunc_count as u32).unwrap();
+
+        // Adjust the jump table to be relative to the new base address
+        for v in table.map.values_mut() {
+            *v += table_base as u64;
+        }
+
+        // Build up the import object. We copy everything over from the current exports, but then
+        // need to add in the memory and table base offsets for the relocations to work.
+        //
+        // let imports = {
+        //     env: {
+        //         memory: base.memory,
+        //         __tls_base: base.__tls_base,
+        //         __stack_pointer: base.__stack_pointer,
+        //         __indirect_function_table: base.__indirect_function_table,
+        //         __memory_base: memory_base,
+        //         __table_base: table_base,
+        //        ..base_exports
+        //     },
+        // };
+        let env = Object::new();
+
+        // Move memory, __tls_base, __stack_pointer, __indirect_function_table, and all exports over
+        for key in Object::keys(&exports) {
+            Reflect::set(&env, &key, &Reflect::get(&exports, &key).unwrap()).unwrap();
+        }
+
+        // Set the memory and table in the imports
+        // Following this pattern: Global.new({ value: "i32", mutable: false }, value)
+        for (name, value) in [("__table_base", table_base), ("__memory_base", memory_base)] {
+            let descriptor = Object::new();
+            Reflect::set(&descriptor, &"value".into(), &"i32".into()).unwrap();
+            Reflect::set(&descriptor, &"mutable".into(), &false.into()).unwrap();
+            let value = WebAssembly::Global::new(&descriptor, &value.into()).unwrap();
+            Reflect::set(&env, &name.into(), &value.into()).unwrap();
+        }
+
+        // Set the memory and table in the imports
+        let imports = Object::new();
+        Reflect::set(&imports, &"env".into(), &env).unwrap();
+
+        // Download the module, returning { module, instance }
+        // we unwrap here instead of using `?` since this whole thing is async
+        let result_object = JsFuture::from(WebAssembly::instantiate_module(
+            dl_bytes.unchecked_ref(),
+            &imports,
+        ))
+        .await
+        .unwrap();
+
+        // We need to run the data relocations and then fire off the constructors
+        let res: Object = result_object.unchecked_into();
+        let instance: Object = Reflect::get(&res, &"instance".into())
+            .unwrap()
+            .unchecked_into();
+        let exports: Object = Reflect::get(&instance, &"exports".into())
+            .unwrap()
+            .unchecked_into();
+        _ = Reflect::get(&exports, &"__wasm_apply_data_relocs".into())
+            .unwrap()
+            .unchecked_into::<js_sys::Function>()
+            .call0(&JsValue::undefined());
+        _ = Reflect::get(&exports, &"__wasm_apply_global_relocs".into())
+            .unwrap()
+            .unchecked_into::<js_sys::Function>()
+            .call0(&JsValue::undefined());
+        _ = Reflect::get(&exports, &"__wasm_call_ctors".into())
+            .unwrap()
+            .unchecked_into::<js_sys::Function>()
+            .call0(&JsValue::undefined());
+
+        unsafe { subsecond::commit_patch(table) };
+    });
+
+    Ok(())
 }
