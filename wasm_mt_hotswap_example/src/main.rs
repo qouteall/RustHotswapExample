@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicBool;
+
 use futures_channel::oneshot;
 use js_sys::{Promise, Uint8ClampedArray, WebAssembly};
 use rayon::prelude::*;
@@ -301,12 +303,11 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
         // We need to grow the memory to accommodate the new module
         memory.grow((dl_bytes.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32 + 1);
 
+
+        let module_promise = WebAssembly::compile_streaming(dl_bytes.unchecked_ref());
+        let module = JsFuture::from(module_promise).await.unwrap();
+
         // below need to be done in every web worker
-        
-
-        let module_promise = WebAssembly::compile(dl_bytes.unchecked_ref());
-
-
         // TODO
 
 
@@ -391,3 +392,22 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
 
     Ok(())
 }
+
+pub fn init_hotpatch_per_web_worker(
+
+) {
+
+}
+
+pub fn finalize_hotpatch_after_all_web_workers_done(table: JumpTable) {
+
+    // TODO
+
+    HOTPATCHED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+// TODO cannot load new web worker after hotpatching once
+// should load max workers upon startup
+static HOTPATCHED: AtomicBool = AtomicBool::new(false);
+
+
