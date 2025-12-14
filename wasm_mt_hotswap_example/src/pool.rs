@@ -49,7 +49,7 @@ impl WorkerPool {
             }),
         };
         for _ in 0..initial {
-            let worker = pool.spawn()?;
+            let worker = pool.spawn_worker_inner()?;
             pool.state.push(worker);
         }
 
@@ -65,7 +65,7 @@ impl WorkerPool {
     ///
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
-    fn spawn(&self) -> Result<Worker, JsValue> {
+    fn spawn_worker_inner(&self) -> Result<Worker, JsValue> {
         console_log!("spawning new worker");
         // TODO: what to do about `./worker.js`:
         //
@@ -90,20 +90,11 @@ impl WorkerPool {
         Ok(worker)
     }
 
-    /// Fetches a worker from this pool, spawning one if necessary.
-    ///
-    /// This will attempt to pull an already-spawned web worker from our cache
-    /// if one is available, otherwise it will spawn a new worker and return the
-    /// newly spawned worker.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error that may happen while a JS web worker is created and a
-    /// message is sent to it.
     fn worker(&self) -> Result<Worker, JsValue> {
         match self.state.workers.borrow_mut().pop() {
             Some(worker) => Ok(worker),
-            None => self.spawn(),
+            None => panic!("No web worker left"), 
+            // TODO implement a proper thread pool, using in-linear-memory message queue
         }
     }
 

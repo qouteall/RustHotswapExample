@@ -1,13 +1,20 @@
-use std::sync::atomic::AtomicBool;
+use std::mem;
+use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::{Arc, RwLock};
 
-use futures_channel::oneshot;
-use js_sys::{Promise, Uint8ClampedArray, WebAssembly};
-use rayon::prelude::*;
-use wasm_bindgen::prelude::*;
-use js_sys::JsString;
-use web_sys::{ImageData, Response, console};
-use subsecond::{JumpTable, PatchError, apply_patch};
 use dioxus_devtools::DevserverMsg;
+use futures_channel::oneshot;
+use js_sys::WebAssembly::Module;
+use js_sys::{JsString, Reflect};
+use js_sys::{
+    Object, Promise, SharedArrayBuffer, Uint8ClampedArray,
+    WebAssembly::{self, Memory, Table},
+};
+use rayon::prelude::*;
+use subsecond::{apply_patch, JumpTable, PatchError};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{console, ImageData, Response};
 use web_sys::{MessageEvent, WebSocket};
 
 fn main() {
@@ -173,7 +180,6 @@ pub fn start() {
     console::log_1(&"Hello world from Rust WASM!".into());
 }
 
-
 #[cfg(not(debug_assertions))]
 fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
     // empty in release
@@ -183,7 +189,6 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
 #[cfg(debug_assertions)]
 fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
     web_sys::console::info_1(&format!("Initializing hotpatch").into());
-    
 
     // Get the location of the devserver, using the current location plus the /_dioxus path
     // The idea here being that the devserver is always located on the /_dioxus behind a proxy
@@ -242,8 +247,6 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
     console::log_1(&"Hotpatch initialized".into());
 }
 
-
-
 pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError> {
     wasm_bindgen_futures::spawn_local(async move {
         use js_sys::{
@@ -258,7 +261,7 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
         let funcs: Table = wasm_bindgen::function_table().unchecked_into();
         let memory: Memory = wasm_bindgen::memory().unchecked_into();
         let exports: Object = wasm_bindgen::exports().unchecked_into();
-        let buffer: ArrayBuffer = memory.buffer().unchecked_into();
+        let buffer: SharedArrayBuffer = memory.buffer().unchecked_into();
 
         let path = table.lib.to_str().unwrap();
 
@@ -303,111 +306,140 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
         // We need to grow the memory to accommodate the new module
         memory.grow((dl_bytes.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32 + 1);
 
-
         let module_promise = WebAssembly::compile_streaming(dl_bytes.unchecked_ref());
         let module = JsFuture::from(module_promise).await.unwrap();
 
-        // below need to be done in every web worker
-        // TODO
+        let table_base = funcs.length();
 
-
-        // We grow the ifunc table to accommodate the new functions
-        // In theory we could just put all the ifuncs in the jump map and use that for our count,
-        // but there's no guarantee from the jump table that it references "itself"
-        // We might need a sentinel value for each ifunc in the jump map to indicate that it is
-        let table_base = funcs.grow(table.ifunc_count as u32).unwrap();
-
-        // Adjust the jump table to be relative to the new base address
         for v in table.map.values_mut() {
             *v += table_base as u64;
         }
-
-        // Build up the import object. We copy everything over from the current exports, but then
-        // need to add in the memory and table base offsets for the relocations to work.
-        //
-        // let imports = {
-        //     env: {
-        //         memory: base.memory,
-        //         __tls_base: base.__tls_base,
-        //         __stack_pointer: base.__stack_pointer,
-        //         __indirect_function_table: base.__indirect_function_table,
-        //         __memory_base: memory_base,
-        //         __table_base: table_base,
-        //        ..base_exports
-        //     },
-        // };
-        let env = Object::new();
-
-        // Move memory, __tls_base, __stack_pointer, __indirect_function_table, and all exports over
-        for key in Object::keys(&exports) {
-            Reflect::set(&env, &key, &Reflect::get(&exports, &key).unwrap()).unwrap();
-        }
-
-        // Set the memory and table in the imports
-        // Following this pattern: Global.new({ value: "i32", mutable: false }, value)
-        for (name, value) in [("__table_base", table_base), ("__memory_base", memory_base)] {
-            let descriptor = Object::new();
-            Reflect::set(&descriptor, &"value".into(), &"i32".into()).unwrap();
-            Reflect::set(&descriptor, &"mutable".into(), &false.into()).unwrap();
-            let value = WebAssembly::Global::new(&descriptor, &value.into()).unwrap();
-            Reflect::set(&env, &name.into(), &value.into()).unwrap();
-        }
-
-        // Set the memory and table in the imports
-        let imports = Object::new();
-        Reflect::set(&imports, &"env".into(), &env).unwrap();
-
-        // Download the module, returning { module, instance }
-        // we unwrap here instead of using `?` since this whole thing is async
-        let result_object = JsFuture::from(WebAssembly::instantiate_module(
-            dl_bytes.unchecked_ref(),
-            &imports,
-        ))
-        .await
-        .unwrap();
-
-        // We need to run the data relocations and then fire off the constructors
-        let res: Object = result_object.unchecked_into();
-        let instance: Object = Reflect::get(&res, &"instance".into())
-            .unwrap()
-            .unchecked_into();
-        let exports: Object = Reflect::get(&instance, &"exports".into())
-            .unwrap()
-            .unchecked_into();
-        _ = Reflect::get(&exports, &"__wasm_apply_data_relocs".into())
-            .unwrap()
-            .unchecked_into::<js_sys::Function>()
-            .call0(&JsValue::undefined());
-        _ = Reflect::get(&exports, &"__wasm_apply_global_relocs".into())
-            .unwrap()
-            .unchecked_into::<js_sys::Function>()
-            .call0(&JsValue::undefined());
-        _ = Reflect::get(&exports, &"__wasm_call_ctors".into())
-            .unwrap()
-            .unchecked_into::<js_sys::Function>()
-            .call0(&JsValue::undefined());
-
-        unsafe { subsecond::commit_patch(table) };
+        
+        todo!()
     });
 
     Ok(())
 }
 
-pub fn init_hotpatch_per_web_worker(
-
+pub async fn init_hotpatch_per_web_worker(
+    table_base: u32,
+    jump_table: &JumpTable,
+    wasm_module: &Module,
+    memory_base: u32,
 ) {
+    let funcs: Table = wasm_bindgen::function_table().unchecked_into();
+    let memory: Memory = wasm_bindgen::memory().unchecked_into();
+    let exports: Object = wasm_bindgen::exports().unchecked_into();
+    let buffer: SharedArrayBuffer = memory.buffer().unchecked_into();
 
+    let old_table_size = funcs.length();
+
+    assert_eq!(old_table_size, table_base);
+
+    // We grow the ifunc table to accommodate the new functions
+    // In theory we could just put all the ifuncs in the jump map and use that for our count,
+    // but there's no guarantee from the jump table that it references "itself"
+    // We might need a sentinel value for each ifunc in the jump map to indicate that it is
+    let table_base = funcs.grow(jump_table.ifunc_count as u32).unwrap();
+
+    // Build up the import object. We copy everything over from the current exports, but then
+    // need to add in the memory and table base offsets for the relocations to work.
+    //
+    // let imports = {
+    //     env: {
+    //         memory: base.memory,
+    //         __tls_base: base.__tls_base,
+    //         __stack_pointer: base.__stack_pointer,
+    //         __indirect_function_table: base.__indirect_function_table,
+    //         __memory_base: memory_base,
+    //         __table_base: table_base,
+    //        ..base_exports
+    //     },
+    // };
+    // TODO see if it changes in multithreading
+    let env = Object::new();
+
+    // Move memory, __tls_base, __stack_pointer, __indirect_function_table, and all exports over
+    for key in Object::keys(&exports) {
+        Reflect::set(&env, &key, &Reflect::get(&exports, &key).unwrap()).unwrap();
+    }
+
+    // Set the memory and table in the imports
+    // Following this pattern: Global.new({ value: "i32", mutable: false }, value)
+    for (name, value) in [("__table_base", table_base), ("__memory_base", memory_base)] {
+        let descriptor = Object::new();
+        Reflect::set(&descriptor, &"value".into(), &"i32".into()).unwrap();
+        Reflect::set(&descriptor, &"mutable".into(), &false.into()).unwrap();
+        let value = WebAssembly::Global::new(&descriptor, &value.into()).unwrap();
+        Reflect::set(&env, &name.into(), &value.into()).unwrap();
+    }
+
+    // Set the memory and table in the imports
+    let imports = Object::new();
+    Reflect::set(&imports, &"env".into(), &env).unwrap();
+
+    // Download the module, returning { module, instance }
+    // we unwrap here instead of using `?` since this whole thing is async
+    let result_object = JsFuture::from(WebAssembly::instantiate_module(wasm_module, &imports))
+        .await
+        .unwrap();
+
+    // We need to run the data relocations and then fire off the constructors
+    let res: Object = result_object.unchecked_into();
+    let instance: Object = Reflect::get(&res, &"instance".into())
+        .unwrap()
+        .unchecked_into();
+    let exports: Object = Reflect::get(&instance, &"exports".into())
+        .unwrap()
+        .unchecked_into();
+    _ = Reflect::get(&exports, &"__wasm_apply_data_relocs".into())
+        .unwrap()
+        .unchecked_into::<js_sys::Function>()
+        .call0(&JsValue::undefined());
+    _ = Reflect::get(&exports, &"__wasm_apply_global_relocs".into())
+        .unwrap()
+        .unchecked_into::<js_sys::Function>()
+        .call0(&JsValue::undefined());
+    _ = Reflect::get(&exports, &"__wasm_call_ctors".into())
+        .unwrap()
+        .unchecked_into::<js_sys::Function>()
+        .call0(&JsValue::undefined());
 }
 
-pub fn finalize_hotpatch_after_all_web_workers_done(table: JumpTable) {
+pub fn finalize_hotpatch_after_all_web_workers_loaded_patch() {
+    // must release read lock before
+    let mut hotpatch_state = HOTPATCH_STATE.try_write().expect("lock poison");
 
-    // TODO
+    match *hotpatch_state {
+        HotPatchState::HaventHotpatched => panic!("Wrong state HaventHotpatched"),
+        HotPatchState::Hotpatching(ref mut s) => {
+            assert_eq!(
+                s.remaining_hotpatch_webworker_num
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                0
+            );
 
-    HOTPATCHED.store(false, std::sync::atomic::Ordering::Relaxed);
+            let table = mem::replace(&mut s.jump_table, None).expect("jump_table None");
+
+            unsafe { subsecond::commit_patch(table) };
+        }
+        HotPatchState::Hotpatched => todo!("Wrong state Hotpatched"),
+    }
+
+    *hotpatch_state = HotPatchState::Hotpatched;
+}
+
+pub enum HotPatchState {
+    HaventHotpatched,
+    Hotpatching(StateWhenHotpatching),
+    Hotpatched,
+}
+
+pub struct StateWhenHotpatching {
+    jump_table: Option<JumpTable>,
+    remaining_hotpatch_webworker_num: AtomicU32,
 }
 
 // TODO cannot load new web worker after hotpatching once
 // should load max workers upon startup
-static HOTPATCHED: AtomicBool = AtomicBool::new(false);
-
-
+static HOTPATCH_STATE: RwLock<HotPatchState> = RwLock::new(HotPatchState::HaventHotpatched);
