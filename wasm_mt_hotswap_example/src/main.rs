@@ -219,11 +219,11 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
             match serde_json::from_str::<DevserverMsg>(string) {
                 Ok(DevserverMsg::HotReload(hr)) => {
                     if let Some(jumptable) = hr.clone().jump_table {
-                        // TODO after linking works, change apply_patch to make multi-threaded wasm loading work
-                        unsafe { apply_patch(jumptable).unwrap() };
+                        // TODO involve sending message to all web workers
+                        // need to refactor worker pool
                     }
 
-                    on_hotpatch_callback();
+                    // on_hotpatch_callback();
                 }
 
                 Ok(DevserverMsg::Shutdown) => {
@@ -314,7 +314,7 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
         for v in table.map.values_mut() {
             *v += table_base as u64;
         }
-        
+
         todo!()
     });
 
