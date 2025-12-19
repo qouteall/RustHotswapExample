@@ -24,6 +24,6 @@ So I need to create a simple web worker manager that:
 
 To distinguish between custom message and loading message and dynamic linking message, web worker manager wraps all JS messages into a new structure. It has `type` field. When `type` is `loding` it's loading message that has SharedArrayBuffer. When `type` is `dynamicLink` it does dynamic linking (no need to implement dynamic linking for now). When `type` is custom then `jsPayload` field carries custom JS value and `rustPayload` field contains a pointer which point to a Rust boxed function.
 
-The web worker manager is managed by main thread. Web worker references are stored in `globalThis.__wasm_web_worker_manager`. But web worker manager's in-Rust data structures should be able to be accessed by all threads.
+The web worker manager is managed by main thread.
 
 The implementation should be simple. Don't overcomplicate.
