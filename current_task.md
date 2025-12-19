@@ -14,7 +14,7 @@ So to do dynamic linking I need to:
 
 - Keep a list of web workers JS references
 - Send a JS message to these web workers (message includes WebAssembly.Module) which denotes dynamic linking
-- Web workers must be able to process the dynamic linking message. The web worker manager need to take control over message processing.
+- Web workers must be able to process the dynamic linking message. The web worker manager need to take control over message processing (the JS callback is managed by web worker manager. both from main thread to web worker and reverse).
 
 So I need to create a simple web worker manager that:
 
@@ -26,11 +26,11 @@ For the message from main thread to web worker:
 
 To distinguish between custom message and loading message and dynamic linking message, web worker manager wraps all JS messages into a new structure. It has `type` field. 
 
-- When `type` is `loding` it's loading message that has SharedArrayBuffer. 
+- When `type` is `loading` it's loading message that has SharedArrayBuffer. 
 - When `type` is `dynamicLink` it does dynamic linking (no need to implement dynamic linking for now). 
-- When `type` is `custom` then `jsPayload` field carries custom JS value and `rustPayload` field contains a pointer which point to a Rust boxed function. The outer API of sending message accepts a `Box<dyn Fn(&JSValue)>`
+- When `type` is `custom` then `jsPayload` field carries custom JS value and `rustPayload` field contains a pointer which point to a Rust boxed function. The outer API of sending message accepts a `Box<dyn Fn(&JSValue)>` and that function will be invoked in web worker.
 
-For the mssage from web worker to main thread:
+For the message from web worker to main thread:
 
 - When `type` is `finishLoading` it tells main thread web worker init is done.
 - When `type` is `custom` then it has `jsPayload` and `rustPayload` fields. The outer API of sending message accepts `Box<dyn Fn(&WebWorkerManager, &JSValue)>`
@@ -39,6 +39,13 @@ Note that wasm-bindgen has functionality of using Rust type to hold JS value. Th
 
 The web worker manager is managed by main thread. It's a global value that's lazily-initialized. Its internal data structure can use `RefCell`. Its APIs are global functions (not methods). Its APIs should check whether current web worker supports the operation.
 
-Use auto-increment u32 as web worker ID.
+Use auto-increment u32 as web worker ID. 
+
+It also need to track web worker status. The statuses:
+
+- Initializing. Spawned but haven't yet received finish init message.
+- Normal. The finish init message has been received.
+- DynamicLinking. (No need to implement dynamic linking for now.)
+- Finalizing. (For future graceful exiting. No need to implement now.)
 
 Don't care about `pool.rs` or copy its design. I am going to rework `pool.rs`.
