@@ -8,11 +8,12 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::mem;
 
 use js_sys::{Object, Reflect};
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Window, Worker, WorkerOptions};
+
+use crate::utils::{decompose_box, reconstruct_box};
 
 // Type aliases for callback trait objects
 type WorkerCallback = dyn Fn(&JsValue);
@@ -40,18 +41,6 @@ fn assert_worker_thread(fn_name: &str) {
     if !is_worker_thread() {
         panic!("{} can only be called from a worker thread", fn_name);
     }
-}
-
-/// Convert a fat pointer (Box<dyn Trait>) to two u32 values for passing via JS.
-fn fat_ptr_to_parts<T: ?Sized>(boxed: Box<T>) -> [u32; 2] {
-    let fat_ptr: *mut T = Box::into_raw(boxed);
-    unsafe { mem::transmute::<*mut T, [u32; 2]>(fat_ptr) }
-}
-
-/// Convert two u32 values back to a fat pointer (Box<dyn Trait>).
-unsafe fn parts_to_fat_ptr<T: ?Sized>(parts: [u32; 2]) -> Box<T> {
-    let fat_ptr = mem::transmute::<[u32; 2], *mut T>(parts);
-    Box::from_raw(fat_ptr)
 }
 
 /// Wrapper type for web worker IDs.
@@ -201,16 +190,16 @@ fn handle_worker_message(worker_id: WorkerId, event: MessageEvent) {
             let data_ptr = Reflect::get(&data, &"rustPayloadData".into())
                 .ok()
                 .and_then(|v| v.as_f64())
-                .map(|v| v as u32);
+                .map(|v| v as usize as *mut ());
             let vtable_ptr = Reflect::get(&data, &"rustPayloadVtable".into())
                 .ok()
                 .and_then(|v| v.as_f64())
-                .map(|v| v as u32);
+                .map(|v| v as usize as *mut ());
 
             if let (Some(data_ptr), Some(vtable_ptr)) = (data_ptr, vtable_ptr) {
                 // Reconstruct fat pointer and call the callback
                 let callback: Box<MainCallback> =
-                    unsafe { parts_to_fat_ptr([data_ptr, vtable_ptr]) };
+                    unsafe { reconstruct_box(data_ptr, vtable_ptr) };
                 // Call the callback with a reference to the manager
                 WEB_WORKER_MANAGER.with(|manager| {
                     let manager = manager.borrow();
@@ -242,15 +231,15 @@ pub fn send_to_worker(
             .get(&worker_id)
             .ok_or_else(|| JsValue::from_str("Worker not found"))?;
 
-        // Convert fat pointer to two u32 parts
-        let [data_ptr, vtable_ptr] = fat_ptr_to_parts(callback);
+        // Decompose fat pointer to two pointer parts
+        let (data_ptr, vtable_ptr) = decompose_box(callback);
 
         // Create the message
         let msg = Object::new();
         Reflect::set(&msg, &"type".into(), &"custom".into())?;
         Reflect::set(&msg, &"jsPayload".into(), js_payload)?;
-        Reflect::set(&msg, &"rustPayloadData".into(), &JsValue::from_f64(data_ptr as f64))?;
-        Reflect::set(&msg, &"rustPayloadVtable".into(), &JsValue::from_f64(vtable_ptr as f64))?;
+        Reflect::set(&msg, &"rustPayloadData".into(), &JsValue::from_f64(data_ptr as usize as f64))?;
+        Reflect::set(&msg, &"rustPayloadVtable".into(), &JsValue::from_f64(vtable_ptr as usize as f64))?;
 
         state.worker.post_message(&msg)?;
 
@@ -269,15 +258,15 @@ pub fn send_to_main(
     assert_worker_thread("send_to_main");
     let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
 
-    // Convert fat pointer to two u32 parts
-    let [data_ptr, vtable_ptr] = fat_ptr_to_parts(callback);
+    // Decompose fat pointer to two pointer parts
+    let (data_ptr, vtable_ptr) = decompose_box(callback);
 
     // Create the message
     let msg = Object::new();
     Reflect::set(&msg, &"type".into(), &"custom".into())?;
     Reflect::set(&msg, &"jsPayload".into(), js_payload)?;
-    Reflect::set(&msg, &"rustPayloadData".into(), &JsValue::from_f64(data_ptr as f64))?;
-    Reflect::set(&msg, &"rustPayloadVtable".into(), &JsValue::from_f64(vtable_ptr as f64))?;
+    Reflect::set(&msg, &"rustPayloadData".into(), &JsValue::from_f64(data_ptr as usize as f64))?;
+    Reflect::set(&msg, &"rustPayloadVtable".into(), &JsValue::from_f64(vtable_ptr as usize as f64))?;
 
     global.post_message(&msg)?;
 
@@ -325,16 +314,16 @@ pub fn worker_handle_message(event: MessageEvent) {
             let data_ptr = Reflect::get(&data, &"rustPayloadData".into())
                 .ok()
                 .and_then(|v| v.as_f64())
-                .map(|v| v as u32);
+                .map(|v| v as usize as *mut ());
             let vtable_ptr = Reflect::get(&data, &"rustPayloadVtable".into())
                 .ok()
                 .and_then(|v| v.as_f64())
-                .map(|v| v as u32);
+                .map(|v| v as usize as *mut ());
 
             if let (Some(data_ptr), Some(vtable_ptr)) = (data_ptr, vtable_ptr) {
                 // Reconstruct fat pointer and call the callback
                 let callback: Box<WorkerCallback> =
-                    unsafe { parts_to_fat_ptr([data_ptr, vtable_ptr]) };
+                    unsafe { reconstruct_box(data_ptr, vtable_ptr) };
                 callback(&js_payload);
                 // callback is dropped here
             }
