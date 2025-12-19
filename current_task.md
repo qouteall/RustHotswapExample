@@ -22,8 +22,23 @@ So I need to create a simple web worker manager that:
 - Manages dynamic linking.
 - Allow user code to send custom message combined with a custom callback. To send things like offline canvas, custom message must be able to carry JS objects. 
 
-To distinguish between custom message and loading message and dynamic linking message, web worker manager wraps all JS messages into a new structure. It has `type` field. When `type` is `loding` it's loading message that has SharedArrayBuffer. When `type` is `dynamicLink` it does dynamic linking (no need to implement dynamic linking for now). When `type` is custom then `jsPayload` field carries custom JS value and `rustPayload` field contains a pointer which point to a Rust boxed function.
+For the message from main thread to web worker:
 
-The web worker manager is managed by main thread.
+To distinguish between custom message and loading message and dynamic linking message, web worker manager wraps all JS messages into a new structure. It has `type` field. 
 
-The implementation should be simple. Don't overcomplicate.
+- When `type` is `loding` it's loading message that has SharedArrayBuffer. 
+- When `type` is `dynamicLink` it does dynamic linking (no need to implement dynamic linking for now). 
+- When `type` is `custom` then `jsPayload` field carries custom JS value and `rustPayload` field contains a pointer which point to a Rust boxed function. The outer API of sending message accepts a `Box<dyn Fn(&JSValue)>`
+
+For the mssage from web worker to main thread:
+
+- When `type` is `finishLoading` it tells main thread web worker init is done.
+- When `type` is `custom` then it has `jsPayload` and `rustPayload` fields. The outer API of sending message accepts `Box<dyn Fn(&WebWorkerManager, &JSValue)>`
+
+Note that wasm-bindgen has functionality of using Rust type to hold JS value. The actual JS value is in a JS array managed by wasm-bindgen. The Rust values can be sent across threads but JS values cannot. This is an important distinction. Sending wasm-bindgen JS proxy types across threads is wrong. JS value has to be sent via web worker message.
+
+The web worker manager is managed by main thread. It's a global value that's lazily-initialized. Its internal data structure can use `RefCell`. Its APIs are global functions (not methods). Its APIs should check whether current web worker supports the operation.
+
+Use auto-increment u32 as web worker ID.
+
+Don't care about `pool.rs` or copy its design. I am going to rework `pool.rs`.
