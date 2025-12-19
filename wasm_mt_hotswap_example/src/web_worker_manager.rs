@@ -8,10 +8,51 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::mem;
 
 use js_sys::{Object, Reflect};
 use wasm_bindgen::prelude::*;
-use web_sys::{MessageEvent, Worker, WorkerOptions};
+use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Window, Worker, WorkerOptions};
+
+// Type aliases for callback trait objects
+type WorkerCallback = dyn Fn(&JsValue);
+type MainCallback = dyn Fn(&WebWorkerManager, WorkerId, &JsValue);
+
+/// Check if running on main thread (Window context).
+fn is_main_thread() -> bool {
+    js_sys::global().dyn_into::<Window>().is_ok()
+}
+
+/// Check if running on a worker thread (DedicatedWorkerGlobalScope context).
+fn is_worker_thread() -> bool {
+    js_sys::global().dyn_into::<DedicatedWorkerGlobalScope>().is_ok()
+}
+
+/// Assert that we're on the main thread, panic otherwise.
+fn assert_main_thread(fn_name: &str) {
+    if !is_main_thread() {
+        panic!("{} can only be called from the main thread", fn_name);
+    }
+}
+
+/// Assert that we're on a worker thread, panic otherwise.
+fn assert_worker_thread(fn_name: &str) {
+    if !is_worker_thread() {
+        panic!("{} can only be called from a worker thread", fn_name);
+    }
+}
+
+/// Convert a fat pointer (Box<dyn Trait>) to two u32 values for passing via JS.
+fn fat_ptr_to_parts<T: ?Sized>(boxed: Box<T>) -> [u32; 2] {
+    let fat_ptr: *mut T = Box::into_raw(boxed);
+    unsafe { mem::transmute::<*mut T, [u32; 2]>(fat_ptr) }
+}
+
+/// Convert two u32 values back to a fat pointer (Box<dyn Trait>).
+unsafe fn parts_to_fat_ptr<T: ?Sized>(parts: [u32; 2]) -> Box<T> {
+    let fat_ptr = mem::transmute::<[u32; 2], *mut T>(parts);
+    Box::from_raw(fat_ptr)
+}
 
 /// Wrapper type for web worker IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,16 +79,10 @@ struct WorkerState {
     _onmessage_closure: Closure<dyn FnMut(MessageEvent)>,
 }
 
-/// Callback type for custom messages from worker to main thread.
-type MainThreadCallback = Box<dyn Fn(&WebWorkerManager, WorkerId, &JsValue)>;
-
 /// The web worker manager, managed by main thread.
 pub struct WebWorkerManager {
     workers: HashMap<WorkerId, WorkerState>,
     next_worker_id: u32,
-    /// Pending callbacks for messages from workers.
-    /// Key is the raw pointer value sent as rustPayload.
-    pending_callbacks: HashMap<usize, MainThreadCallback>,
 }
 
 impl WebWorkerManager {
@@ -55,7 +90,6 @@ impl WebWorkerManager {
         Self {
             workers: HashMap::new(),
             next_worker_id: 0,
-            pending_callbacks: HashMap::new(),
         }
     }
 
@@ -73,6 +107,7 @@ thread_local! {
 /// Initialize the web worker manager. Must be called from main thread.
 /// Safe to call multiple times (will be no-op if already initialized).
 pub fn init_web_worker_manager() {
+    assert_main_thread("init_web_worker_manager");
     WEB_WORKER_MANAGER.with(|manager| {
         let mut manager = manager.borrow_mut();
         if manager.is_none() {
@@ -106,7 +141,9 @@ where
 }
 
 /// Spawn a new web worker. Returns the worker ID immediately (status will be Initializing).
+/// Must be called from main thread.
 pub fn spawn_worker() -> Result<WorkerId, JsValue> {
+    assert_main_thread("spawn_worker");
     with_manager_mut(|manager| {
         let worker_id = manager.allocate_worker_id();
 
@@ -143,7 +180,7 @@ pub fn spawn_worker() -> Result<WorkerId, JsValue> {
     })
 }
 
-/// Handle a message received from a worker.
+/// Handle a message received from a worker (called on main thread).
 fn handle_worker_message(worker_id: WorkerId, event: MessageEvent) {
     let data = event.data();
 
@@ -161,24 +198,26 @@ fn handle_worker_message(worker_id: WorkerId, event: MessageEvent) {
         }
         Some("custom") => {
             let js_payload = Reflect::get(&data, &"jsPayload".into()).unwrap_or(JsValue::UNDEFINED);
-            let rust_payload = Reflect::get(&data, &"rustPayload".into())
+            let data_ptr = Reflect::get(&data, &"rustPayloadData".into())
                 .ok()
                 .and_then(|v| v.as_f64())
-                .map(|v| v as usize);
+                .map(|v| v as u32);
+            let vtable_ptr = Reflect::get(&data, &"rustPayloadVtable".into())
+                .ok()
+                .and_then(|v| v.as_f64())
+                .map(|v| v as u32);
 
-            if let Some(ptr) = rust_payload {
-                // Take the callback out and execute it
-                let callback = with_manager_mut(|manager| manager.pending_callbacks.remove(&ptr));
-
-                if let Some(callback) = callback {
-                    // We need to call the callback with a reference to the manager
-                    // This is tricky because we can't hold the borrow while calling
-                    WEB_WORKER_MANAGER.with(|manager| {
-                        let manager = manager.borrow();
-                        let manager = manager.as_ref().expect("WebWorkerManager not initialized");
-                        callback(manager, worker_id, &js_payload);
-                    });
-                }
+            if let (Some(data_ptr), Some(vtable_ptr)) = (data_ptr, vtable_ptr) {
+                // Reconstruct fat pointer and call the callback
+                let callback: Box<MainCallback> =
+                    unsafe { parts_to_fat_ptr([data_ptr, vtable_ptr]) };
+                // Call the callback with a reference to the manager
+                WEB_WORKER_MANAGER.with(|manager| {
+                    let manager = manager.borrow();
+                    let manager = manager.as_ref().expect("WebWorkerManager not initialized");
+                    callback(manager, worker_id, &js_payload);
+                });
+                // callback is dropped here
             }
         }
         _ => {
@@ -190,25 +229,28 @@ fn handle_worker_message(worker_id: WorkerId, event: MessageEvent) {
 /// Send a custom message from main thread to a worker.
 ///
 /// The `callback` will be invoked on the worker side with the `js_payload`.
+/// Must be called from main thread.
 pub fn send_to_worker(
     worker_id: WorkerId,
     js_payload: &JsValue,
-    callback: Box<dyn Fn(&JsValue)>,
+    callback: Box<WorkerCallback>,
 ) -> Result<(), JsValue> {
+    assert_main_thread("send_to_worker");
     with_manager(|manager| {
         let state = manager
             .workers
             .get(&worker_id)
             .ok_or_else(|| JsValue::from_str("Worker not found"))?;
 
-        // Box the callback and get the raw pointer
-        let ptr = Box::into_raw(callback) as usize;
+        // Convert fat pointer to two u32 parts
+        let [data_ptr, vtable_ptr] = fat_ptr_to_parts(callback);
 
         // Create the message
         let msg = Object::new();
         Reflect::set(&msg, &"type".into(), &"custom".into())?;
         Reflect::set(&msg, &"jsPayload".into(), js_payload)?;
-        Reflect::set(&msg, &"rustPayload".into(), &JsValue::from_f64(ptr as f64))?;
+        Reflect::set(&msg, &"rustPayloadData".into(), &JsValue::from_f64(data_ptr as f64))?;
+        Reflect::set(&msg, &"rustPayloadVtable".into(), &JsValue::from_f64(vtable_ptr as f64))?;
 
         state.worker.post_message(&msg)?;
 
@@ -219,39 +261,44 @@ pub fn send_to_worker(
 /// Send a custom message from worker to main thread.
 ///
 /// The `callback` will be invoked on the main thread with the manager, worker ID, and js_payload.
-/// This function should be called from a worker.
+/// Must be called from a worker thread.
 pub fn send_to_main(
     js_payload: &JsValue,
-    callback: Box<dyn Fn(&WebWorkerManager, WorkerId, &JsValue)>,
+    callback: Box<MainCallback>,
 ) -> Result<(), JsValue> {
-    let global = js_sys::global().unchecked_into::<web_sys::DedicatedWorkerGlobalScope>();
+    assert_worker_thread("send_to_main");
+    let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
 
-    // Box the callback and get the raw pointer
-    let ptr = Box::into_raw(callback) as usize;
+    // Convert fat pointer to two u32 parts
+    let [data_ptr, vtable_ptr] = fat_ptr_to_parts(callback);
 
     // Create the message
     let msg = Object::new();
     Reflect::set(&msg, &"type".into(), &"custom".into())?;
     Reflect::set(&msg, &"jsPayload".into(), js_payload)?;
-    Reflect::set(&msg, &"rustPayload".into(), &JsValue::from_f64(ptr as f64))?;
+    Reflect::set(&msg, &"rustPayloadData".into(), &JsValue::from_f64(data_ptr as f64))?;
+    Reflect::set(&msg, &"rustPayloadVtable".into(), &JsValue::from_f64(vtable_ptr as f64))?;
 
     global.post_message(&msg)?;
 
     Ok(())
 }
 
-/// Get the status of a worker.
+/// Get the status of a worker. Must be called from main thread.
 pub fn get_worker_status(worker_id: WorkerId) -> Option<WorkerStatus> {
+    assert_main_thread("get_worker_status");
     with_manager(|manager| manager.workers.get(&worker_id).map(|s| s.status))
 }
 
-/// Get all worker IDs.
+/// Get all worker IDs. Must be called from main thread.
 pub fn get_all_worker_ids() -> Vec<WorkerId> {
+    assert_main_thread("get_all_worker_ids");
     with_manager(|manager| manager.workers.keys().copied().collect())
 }
 
-/// Get worker IDs with a specific status.
+/// Get worker IDs with a specific status. Must be called from main thread.
 pub fn get_workers_by_status(status: WorkerStatus) -> Vec<WorkerId> {
+    assert_main_thread("get_workers_by_status");
     with_manager(|manager| {
         manager
             .workers
@@ -263,8 +310,10 @@ pub fn get_workers_by_status(status: WorkerStatus) -> Vec<WorkerId> {
 }
 
 /// Handler for messages received by a worker. Called from worker.js.
+/// Must be called from a worker thread.
 #[wasm_bindgen(js_name = workerHandleMessage)]
 pub fn worker_handle_message(event: MessageEvent) {
+    assert_worker_thread("worker_handle_message");
     let data = event.data();
 
     let msg_type = Reflect::get(&data, &"type".into()).ok();
@@ -273,14 +322,19 @@ pub fn worker_handle_message(event: MessageEvent) {
     match msg_type.as_deref() {
         Some("custom") => {
             let js_payload = Reflect::get(&data, &"jsPayload".into()).unwrap_or(JsValue::UNDEFINED);
-            let rust_payload = Reflect::get(&data, &"rustPayload".into())
+            let data_ptr = Reflect::get(&data, &"rustPayloadData".into())
                 .ok()
                 .and_then(|v| v.as_f64())
-                .map(|v| v as usize);
+                .map(|v| v as u32);
+            let vtable_ptr = Reflect::get(&data, &"rustPayloadVtable".into())
+                .ok()
+                .and_then(|v| v.as_f64())
+                .map(|v| v as u32);
 
-            if let Some(ptr) = rust_payload {
-                // Reconstruct and call the callback
-                let callback = unsafe { Box::from_raw(ptr as *mut Box<dyn Fn(&JsValue)>) };
+            if let (Some(data_ptr), Some(vtable_ptr)) = (data_ptr, vtable_ptr) {
+                // Reconstruct fat pointer and call the callback
+                let callback: Box<WorkerCallback> =
+                    unsafe { parts_to_fat_ptr([data_ptr, vtable_ptr]) };
                 callback(&js_payload);
                 // callback is dropped here
             }
@@ -298,8 +352,11 @@ pub fn worker_handle_message(event: MessageEvent) {
 }
 
 /// Called by worker to notify main thread that loading is complete.
+/// Must be called from a worker thread.
+#[wasm_bindgen]
 pub fn notify_loading_complete() -> Result<(), JsValue> {
-    let global = js_sys::global().unchecked_into::<web_sys::DedicatedWorkerGlobalScope>();
+    assert_worker_thread("notify_loading_complete");
+    let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
 
     let msg = Object::new();
     Reflect::set(&msg, &"type".into(), &"finishLoading".into())?;
