@@ -29,6 +29,7 @@ macro_rules! console_log {
 }
 
 mod pool;
+mod web_worker_manager;
 
 #[wasm_bindgen]
 extern "C" {
