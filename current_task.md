@@ -51,3 +51,5 @@ It also need to track web worker status. The statuses:
 - Finalizing. (For future graceful exiting. No need to implement now.)
 
 Don't care about `pool.rs` or copy its design. I am going to rework `pool.rs`.
+
+Also, a web worker can manage its sub-workers. But the web worker manager don't do that for simplicity.

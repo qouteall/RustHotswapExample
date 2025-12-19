@@ -1,4 +1,4 @@
-import wbg_init, { child_entry_point, workerHandleMessage } from './wasm/wasm_mt_hotswap_example.js';
+import wbg_init, { child_entry_point, workerHandleMessage, notify_loading_complete } from './wasm/wasm_mt_hotswap_example.js';
 
 // Unified message handler for web worker manager
 // Messages are wrapped with { type, ... } structure
@@ -19,6 +19,9 @@ self.onmessage = async (event) => {
           setTimeout(() => { throw err; });
           throw err;
         });
+        // Wait for init to complete, then notify main thread
+        await initialised;
+        notify_loading_complete();
         break;
 
       case 'dynamicLink':
