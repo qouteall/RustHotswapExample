@@ -35,13 +35,13 @@ The web worker's `onmessage` is initialized in `worker.js` and won't change afte
 For the message from web worker to main thread:
 
 - When `type` is `finishLoading` it tells main thread web worker init is done.
-- When `type` is `custom` then it has `jsPayload` and `rustPayload` fields. The outer API of sending message accepts `Box<dyn Fn(&WebWorkerManager, &JSValue)>`
+- When `type` is `custom` then it has `jsPayload` and `rustPayload` fields. The outer API of sending message accepts `Box<dyn Fn(&WebWorkerManager, WorkerId, &JSValue)>`
 
 Note that wasm-bindgen has functionality of using Rust type to hold JS value. The actual JS value is in a JS array managed by wasm-bindgen. The Rust values can be sent across threads but JS values cannot. This is an important distinction. Sending wasm-bindgen JS proxy types across threads is wrong. JS value has to be sent via web worker message.
 
 The web worker manager is managed by main thread. It's a global value that's lazily-initialized. Its internal data structure can use `RefCell`. Its APIs are global functions (not methods). Its APIs should check whether current web worker supports the operation.
 
-Use auto-increment u32 as web worker ID. Only main thread know worker ID. When receiving message from worker, worker id comes from different callbacks set to different workers.
+Use auto-increment u32 as web worker ID. Wrapped as type `WorkerId`. Only main thread know worker ID. When receiving message from worker, worker id comes from different callbacks set to different workers.
 
 It also need to track web worker status. The statuses:
 
