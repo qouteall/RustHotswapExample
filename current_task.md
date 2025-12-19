@@ -26,9 +26,11 @@ For the message from main thread to web worker:
 
 To distinguish between custom message and loading message and dynamic linking message, web worker manager wraps all JS messages into a new structure. It has `type` field. 
 
-- When `type` is `loading` it's loading message that has SharedArrayBuffer. 
+- When `type` is `loading` it's loading message that has SharedArrayBuffer.
 - When `type` is `dynamicLink` it does dynamic linking (no need to implement dynamic linking for now). 
 - When `type` is `custom` then `jsPayload` field carries custom JS value and `rustPayload` field contains a pointer which point to a Rust boxed function. The outer API of sending message accepts a `Box<dyn Fn(&JSValue)>` and that function will be invoked in web worker.
+
+The web worker's `onmessage` is initialized in `worker.js` and won't change after initializing. Note that loading wasm is async so it should await loading before processing new message.
 
 For the message from web worker to main thread:
 
@@ -39,7 +41,7 @@ Note that wasm-bindgen has functionality of using Rust type to hold JS value. Th
 
 The web worker manager is managed by main thread. It's a global value that's lazily-initialized. Its internal data structure can use `RefCell`. Its APIs are global functions (not methods). Its APIs should check whether current web worker supports the operation.
 
-Use auto-increment u32 as web worker ID. 
+Use auto-increment u32 as web worker ID. Only main thread know worker ID. When receiving message from worker, worker id comes from different callbacks set to different workers.
 
 It also need to track web worker status. The statuses:
 
