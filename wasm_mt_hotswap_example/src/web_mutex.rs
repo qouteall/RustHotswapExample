@@ -15,14 +15,14 @@ thread_local! {
 
 /// Returns whether the current thread is the main thread (Window context).
 /// Result is cached in a thread-local for performance.
-pub fn is_main_thread_cached() -> bool {
+pub fn is_main_thread() -> bool {
     IS_MAIN_THREAD.with(|&v| v)
 }
 
 /// Returns whether the current thread is a worker thread.
 /// Result is cached in a thread-local for performance.
 pub fn is_worker_thread_cached() -> bool {
-    !is_main_thread_cached()
+    !is_main_thread()
 }
 
 /// Extension trait for `std::sync::Mutex` that provides web-safe locking.
@@ -40,7 +40,7 @@ pub trait MutexWebExt<T> {
 
 impl<T> MutexWebExt<T> for Mutex<T> {
     fn web_safe_lock(&self) -> LockResult<MutexGuard<'_, T>> {
-        if is_main_thread_cached() {
+        if is_main_thread() {
             // Spin lock on main thread. Because main thread cannot block using `i32.wait`
             loop {
                 match self.try_lock() {

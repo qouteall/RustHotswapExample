@@ -1,4 +1,4 @@
-import wbg_init, { __wwm_internal_worker_handle_message } from './wasm/wasm_mt_hotswap_example.js';
+import wbg_init, { __wwm_internal_worker_init, __wwm_internal_worker_handle_message } from './wasm/wasm_mt_hotswap_example.js';
 
 // Web Worker Manager protocol implementation
 // wasmInit: null = expect init message, Promise = expect task message
@@ -20,10 +20,8 @@ self.onmessage = async (event) => {
       return;
     }
 
-    // Set worker ID on globalThis (reserved for future use)
-    if ('__wwm_web_worker_id' in data) {
-      globalThis.__wwm_web_worker_id = data.__wwm_web_worker_id;
-    }
+    const threadId = data.__wwm_thread_id;
+    const senderId = data.__wwm_sender_id;
 
     // Start initialization - set wasmInit to Promise immediately
     wasmInit = wbg_init({
@@ -34,12 +32,19 @@ self.onmessage = async (event) => {
       throw err;
     });
 
-    // Wait for init to complete
+    // Wait for WASM init to complete
     await wasmInit;
+
+    // Initialize worker thread state with MessagePorts
+    const outboundPorts = data.__wwm_outbound_ports || [];
+    const inboundPorts = data.__wwm_inbound_ports || [];
+    const workerCount = data.__wwm_worker_count || 0;
+
+    __wwm_internal_worker_init(threadId, outboundPorts, inboundPorts, workerCount);
 
     // Run the init callback if provided
     if ('__wwm_callback' in data) {
-      __wwm_internal_worker_handle_message(data.__wwm_callback, data.__wwm_js_payload);
+      __wwm_internal_worker_handle_message(senderId, data.__wwm_callback, data.__wwm_js_payload);
     }
   } else {
     // Expecting task message
@@ -51,7 +56,9 @@ self.onmessage = async (event) => {
     // Wait for init to complete before processing task
     await wasmInit;
 
+    const senderId = data.__wwm_sender_id || 0;
+
     // Forward to Rust handler
-    __wwm_internal_worker_handle_message(data.__wwm_callback, data.__wwm_js_payload);
+    __wwm_internal_worker_handle_message(senderId, data.__wwm_callback, data.__wwm_js_payload);
   }
 };

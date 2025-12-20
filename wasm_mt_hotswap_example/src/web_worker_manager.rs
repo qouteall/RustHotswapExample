@@ -36,36 +36,62 @@
 //! **Important**: Web workers managed by this module must not be touched by raw
 //! JS APIs. Don't directly send messages or change their `onmessage` callback.
 //!
+//! ## Thread IDs
+//!
+//! - `ThreadId(0)` = main thread
+//! - `ThreadId(1..=n)` = worker threads
+//!
 //! ## Message Protocol
 //!
-//! From main thread to web worker:
-//! - Init message: `{ __wwm_wasm_module, __wwm_wasm_memory, __wwm_callback, __wwm_js_payload, __wwm_web_worker_id }`
-//! - Task message: `{ __wwm_callback, __wwm_js_payload }`
+//! Init message (main → worker):
+//! ```text
+//! {
+//!   __wwm_wasm_module: WebAssembly.Module,
+//!   __wwm_wasm_memory: WebAssembly.Memory,
+//!   __wwm_callback: [dataPtr, vTablePtr],  // fat pointer for Box<dyn FnOnce(ThreadId, JsValue) + Send>
+//!   __wwm_js_payload: any,                 // user-defined payload
+//!   __wwm_thread_id: number,               // this worker's ThreadId (1..=n)
+//!   __wwm_sender_id: number,               // sender's ThreadId (always 0 for init)
+//!   __wwm_outbound_ports: [MessagePort | null, ...],  // ports to send to other workers
+//!   __wwm_inbound_ports: [MessagePort | null, ...],   // ports to receive from other workers
+//!   __wwm_worker_count: number             // total number of workers
+//! }
+//! ```
 //!
-//! From web worker to main thread:
-//! - Task message: `{ __wwm_callback, __wwm_js_payload }`
+//! Port arrays:
+//! `outbound_ports[i]` is the port to send to worker `i+1`.
+//! `inbound_ports[i]` is the port to receive from worker `i+1`.
+//! Self-referencing entries are `null` (e.g., worker 1's `outbound_ports[0]` is null).
 //!
-//! `__wwm_callback` is a JS array of [dataPtr, vTablePtr], representing `Box<dyn FnOnce(JsValue) + Send>` fat pointer.
+//! Task message (any direction - main↔worker or worker↔worker):
+//! ```text
+//! {
+//!   __wwm_callback: [dataPtr, vTablePtr],  // fat pointer for Box<dyn FnOnce(ThreadId, JsValue) + Send>
+//!   __wwm_js_payload: any,                 // user-defined payload
+//!   __wwm_sender_id: number                // sender's ThreadId
+//! }
+//! ```
+//!
+//! The callback fat pointer is heap-allocated by the sender and dropped by the receiver
+//! after invocation.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
 
 use js_sys::{Array, Object, Reflect};
 use wasm_bindgen::prelude::*;
-use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions};
+use web_sys::{DedicatedWorkerGlobalScope, MessageChannel, MessageEvent, MessagePort, Worker, WorkerOptions};
 
 use crate::utils::{decompose_box, reconstruct_box};
-use crate::web_mutex::{is_main_thread_cached, is_worker_thread_cached};
+use crate::web_mutex::{is_main_thread, is_worker_thread_cached};
 
-// Type aliases for callback trait objects
-// Using FnOnce + Send as callbacks cross thread boundaries and are called once
-type WorkerCallback = dyn FnOnce(JsValue) + Send;
-type MainCallback = dyn FnOnce(WorkerId, JsValue) + Send;
+/// Unified callback type for messages between any threads.
+/// Receives sender's ThreadId and the JS payload.
+type ThreadCallback = dyn FnOnce(ThreadId, JsValue) + Send;
 
 /// Assert that we're on the main thread, panic otherwise.
 #[track_caller]
 fn assert_main_thread() {
-    if !is_main_thread_cached() {
+    if !is_main_thread() {
         let loc = std::panic::Location::caller();
         panic!("{}:{} can only be called from the main thread", loc.file(), loc.line());
     }
@@ -80,9 +106,19 @@ fn assert_worker_thread() {
     }
 }
 
-/// Wrapper type for web worker IDs.
+/// Thread identifier. `ThreadId(0)` is main thread, `ThreadId(1..=n)` are workers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct WorkerId(pub u32);
+pub struct ThreadId(pub u32);
+
+impl ThreadId {
+    /// The main thread's ID.
+    pub const MAIN: ThreadId = ThreadId(0);
+
+    /// Returns true if this is the main thread.
+    pub fn is_main(&self) -> bool {
+        self.0 == 0
+    }
+}
 
 /// Status of a web worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +134,7 @@ pub enum WorkerStatus {
     Finalizing,
 }
 
-/// Internal state for a single worker.
+/// Internal state for a single worker (main thread only).
 struct WorkerState {
     worker: Worker,
     status: WorkerStatus,
@@ -106,72 +142,80 @@ struct WorkerState {
     _onmessage_closure: Closure<dyn FnMut(MessageEvent)>,
 }
 
-/// The web worker manager, managed by main thread.
-struct WebWorkerManager {
-    workers: HashMap<WorkerId, WorkerState>,
-    next_worker_id: u32,
+/// Main thread state for the web worker manager.
+struct MainThreadState {
+    /// Worker states indexed by ThreadId (1-indexed, so index 0 is unused).
+    workers: Vec<Option<WorkerState>>,
+    /// Number of workers.
+    worker_count: usize,
+    /// Closures for MessageChannel onmessage handlers (kept alive to prevent GC).
+    /// Not used on main thread, but stored here during init before transfer.
+    _channel_closures: Vec<Closure<dyn FnMut(MessageEvent)>>,
 }
 
-impl WebWorkerManager {
-    fn new() -> Self {
-        Self {
-            workers: HashMap::new(),
-            next_worker_id: 0,
-        }
-    }
-
-    fn allocate_worker_id(&mut self) -> WorkerId {
-        let id = WorkerId(self.next_worker_id);
-        self.next_worker_id += 1;
-        id
-    }
-
-    /// Update worker status. Called internally.
-    fn set_worker_status(&mut self, worker_id: WorkerId, status: WorkerStatus) {
-        if let Some(state) = self.workers.get_mut(&worker_id) {
-            state.status = status;
-        }
-    }
+/// Worker thread state (thread-local on each worker).
+struct WorkerThreadState {
+    /// This worker's ThreadId.
+    my_thread_id: ThreadId,
+    /// Outbound MessagePorts to other workers. Index i = port to worker i+1.
+    /// Index 0 is unused (no port to main thread via MessageChannel).
+    outbound_ports: Vec<Option<MessagePort>>,
+    /// Closures for inbound MessageChannel onmessage handlers (kept alive to prevent GC).
+    _inbound_closures: Vec<Closure<dyn FnMut(MessageEvent)>>,
 }
 
 thread_local! {
-    static WEB_WORKER_MANAGER: RefCell<Option<WebWorkerManager>> = const { RefCell::new(None) };
+    /// Main thread state (only initialized on main thread).
+    static MAIN_THREAD_STATE: RefCell<Option<MainThreadState>> = const { RefCell::new(None) };
+
+    /// Worker thread state (only initialized on worker threads).
+    static WORKER_THREAD_STATE: RefCell<Option<WorkerThreadState>> = const { RefCell::new(None) };
+
+    /// Current thread's ThreadId. Set on all threads.
+    static MY_THREAD_ID: Cell<Option<ThreadId>> = const { Cell::new(None) };
 }
 
-/// Initialize the web worker manager. Must be called from main thread.
-/// Safe to call multiple times (will be no-op if already initialized).
+/// Get the current thread's ThreadId. Panics if not set.
 #[track_caller]
-pub fn init_web_worker_manager() {
-    assert_main_thread();
-    WEB_WORKER_MANAGER.with(|manager| {
-        let mut manager = manager.borrow_mut();
-        if manager.is_none() {
-            *manager = Some(WebWorkerManager::new());
-        }
-    });
+pub fn my_thread_id() -> ThreadId {
+    MY_THREAD_ID.with(|id| id.get().expect("ThreadId not set - web worker manager not initialized"))
 }
 
-/// Access the web worker manager. Panics if not initialized or not on main thread.
-fn with_manager<F, R>(f: F) -> R
+/// Get the number of workers. Must be called after init.
+#[track_caller]
+pub fn worker_count() -> usize {
+    if is_main_thread() {
+        MAIN_THREAD_STATE.with(|state| {
+            state.borrow().as_ref().expect("WebWorkerManager not initialized").worker_count
+        })
+    } else {
+        WORKER_THREAD_STATE.with(|state| {
+            state.borrow().as_ref().expect("Worker not initialized").outbound_ports.len()
+        })
+    }
+}
+
+/// Access main thread state. Panics if not initialized or not on main thread.
+fn with_main_state<F, R>(f: F) -> R
 where
-    F: FnOnce(&WebWorkerManager) -> R,
+    F: FnOnce(&MainThreadState) -> R,
 {
-    WEB_WORKER_MANAGER.with(|manager| {
-        let manager = manager.borrow();
-        let manager = manager.as_ref().expect("WebWorkerManager not initialized");
-        f(manager)
+    MAIN_THREAD_STATE.with(|state| {
+        let state = state.borrow();
+        let state = state.as_ref().expect("WebWorkerManager not initialized");
+        f(state)
     })
 }
 
-/// Access the web worker manager mutably. Panics if not initialized or not on main thread.
-fn with_manager_mut<F, R>(f: F) -> R
+/// Access main thread state mutably. Panics if not initialized or not on main thread.
+fn with_main_state_mut<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut WebWorkerManager) -> R,
+    F: FnOnce(&mut MainThreadState) -> R,
 {
-    WEB_WORKER_MANAGER.with(|manager| {
-        let mut manager = manager.borrow_mut();
-        let manager = manager.as_mut().expect("WebWorkerManager not initialized");
-        f(manager)
+    MAIN_THREAD_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut().expect("WebWorkerManager not initialized");
+        f(state)
     })
 }
 
@@ -191,22 +235,55 @@ fn parse_callback_array(arr: &JsValue) -> Option<(*mut (), *mut ())> {
     Some((data_ptr, vtable_ptr))
 }
 
-/// Spawn a new web worker. Returns the worker ID immediately (status will be Initializing).
-/// Must be called from main thread.
+/// Initialize the web worker manager with a fixed number of workers.
+/// Must be called from main thread. Panics if called twice.
 ///
-/// The `on_init` callback runs in the worker immediately after WASM init completes.
-/// The callback sends a message to main thread to update status to Normal.
+/// This creates all workers upfront and sets up n² MessageChannels for
+/// worker-to-worker communication.
 ///
-/// Note: the web workers managed by it must be used via web worker manager API.
-/// Don't use raw JS API for sending message or setting callback.
+/// The `on_init` callback runs in each worker after WASM init completes.
+/// It receives the worker's ThreadId as JS payload.
 #[track_caller]
-pub fn spawn_worker(
-    on_init: Box<dyn FnOnce(JsValue) + Send>,
-    js_payload: &JsValue,
-) -> Result<WorkerId, JsValue> {
+pub fn init_web_worker_manager(
+    worker_count: usize,
+    on_init: Box<dyn Fn(ThreadId) + Send + Sync>,
+) -> Result<(), JsValue> {
     assert_main_thread();
-    with_manager_mut(|manager| {
-        let worker_id = manager.allocate_worker_id();
+
+    // Check not already initialized
+    MAIN_THREAD_STATE.with(|state| {
+        if state.borrow().is_some() {
+            panic!("WebWorkerManager already initialized");
+        }
+    });
+
+    // Set main thread's ID
+    MY_THREAD_ID.with(|id| id.set(Some(ThreadId::MAIN)));
+
+    // Create MessageChannels for worker-to-worker communication.
+    // channels[i][j] = channel for worker i+1 to send to worker j+1 (0-indexed arrays)
+    // We only need channels where i != j
+    let mut channels: Vec<Vec<Option<MessageChannel>>> = Vec::with_capacity(worker_count);
+    for i in 0..worker_count {
+        let mut row = Vec::with_capacity(worker_count);
+        for j in 0..worker_count {
+            if i != j {
+                row.push(Some(MessageChannel::new()?));
+            } else {
+                row.push(None); // No channel to self
+            }
+        }
+        channels.push(row);
+    }
+
+    // Create workers
+    let mut workers: Vec<Option<WorkerState>> = Vec::with_capacity(worker_count + 1);
+    workers.push(None); // Index 0 unused (main thread)
+
+    let on_init = std::sync::Arc::new(on_init);
+
+    for worker_idx in 0..worker_count {
+        let thread_id = ThreadId((worker_idx + 1) as u32);
 
         // Create worker options for ES module worker
         let options = WorkerOptions::new();
@@ -214,57 +291,128 @@ pub fn spawn_worker(
 
         let worker = Worker::new_with_options("./worker.js", &options)?;
 
-        // Set up onmessage handler for this worker
-        // The closure captures worker_id so main thread knows which worker sent the message
-        let worker_id_for_closure = worker_id;
+        // Set up onmessage handler for this worker (for messages from worker to main)
+        let thread_id_for_closure = thread_id;
         let onmessage_closure = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-            handle_worker_message(worker_id_for_closure, event);
+            handle_message_from_worker(thread_id_for_closure, event);
         });
         worker.set_onmessage(Some(onmessage_closure.as_ref().unchecked_ref()));
 
-        // Wrap user's on_init callback to automatically send status update after it runs
-        let wrapped_on_init: Box<dyn FnOnce(JsValue) + Send> = Box::new(move |js_payload| {
-            // Run user's init callback first
-            on_init(js_payload);
+        // Collect MessagePorts for this worker:
+        // - outbound_ports: ports this worker uses to SEND to other workers
+        //   outbound_ports[j] = port1 of channels[worker_idx][j] (for j != worker_idx)
+        // - inbound_ports: ports this worker uses to RECEIVE from other workers
+        //   inbound_ports[i] = port2 of channels[i][worker_idx] (for i != worker_idx)
+        let outbound_ports = Array::new();
+        let inbound_ports = Array::new();
 
-            // Then send status update to main thread
-            let _ = send_to_main(
-                Box::new(move |worker_id, _| {
-                    with_manager_mut(|manager| {
-                        manager.set_worker_status(worker_id, WorkerStatus::Normal);
+        for j in 0..worker_count {
+            if j != worker_idx {
+                if let Some(ref channel) = channels[worker_idx][j] {
+                    outbound_ports.push(&channel.port1());
+                } else {
+                    outbound_ports.push(&JsValue::NULL);
+                }
+            } else {
+                outbound_ports.push(&JsValue::NULL); // No port to self
+            }
+        }
+
+        for i in 0..worker_count {
+            if i != worker_idx {
+                if let Some(ref channel) = channels[i][worker_idx] {
+                    inbound_ports.push(&channel.port2());
+                } else {
+                    inbound_ports.push(&JsValue::NULL);
+                }
+            } else {
+                inbound_ports.push(&JsValue::NULL); // No port from self
+            }
+        }
+
+        // Create init callback that runs on worker
+        let on_init_clone = on_init.clone();
+        let wrapped_on_init: Box<dyn FnOnce(ThreadId, JsValue) + Send> = Box::new(move |sender_id, _js_payload| {
+            // sender_id is ThreadId::MAIN for init message
+            let _ = sender_id;
+
+            // Get my thread ID from thread-local (set by JS during init)
+            let my_id = my_thread_id();
+
+            // Run user's init callback
+            on_init_clone(my_id);
+
+            // Send status update to main thread
+            // TODO review the purpose of state tracking. also can it be done without message passing
+            let _ = send_to_thread(
+                ThreadId::MAIN,
+                Box::new(move |_sender, _payload| {
+                    with_main_state_mut(|state| {
+                        if let Some(Some(worker_state)) = state.workers.get_mut(my_id.0 as usize) {
+                            worker_state.status = WorkerStatus::Normal;
+                        }
                     });
                 }),
                 &JsValue::UNDEFINED,
             );
         });
 
-        // Decompose the wrapped init callback fat pointer
+        // Decompose the callback fat pointer
         let (data_ptr, vtable_ptr) = decompose_box(wrapped_on_init);
 
-        // Send init message with new protocol
+        // Send init message
         let msg = Object::new();
         Reflect::set(&msg, &"__wwm_wasm_module".into(), &wasm_bindgen::module())?;
         Reflect::set(&msg, &"__wwm_wasm_memory".into(), &wasm_bindgen::memory())?;
         Reflect::set(&msg, &"__wwm_callback".into(), &create_callback_array(data_ptr, vtable_ptr))?;
-        Reflect::set(&msg, &"__wwm_js_payload".into(), js_payload)?;
-        Reflect::set(&msg, &"__wwm_web_worker_id".into(), &JsValue::from_f64(worker_id.0 as f64))?;
-        worker.post_message(&msg)?;
+        Reflect::set(&msg, &"__wwm_js_payload".into(), &JsValue::UNDEFINED)?;
+        Reflect::set(&msg, &"__wwm_thread_id".into(), &JsValue::from_f64(thread_id.0 as f64))?;
+        Reflect::set(&msg, &"__wwm_sender_id".into(), &JsValue::from_f64(ThreadId::MAIN.0 as f64))?;
+        // MessageChannel ports (separate from user payload)
+        Reflect::set(&msg, &"__wwm_outbound_ports".into(), &outbound_ports)?;
+        Reflect::set(&msg, &"__wwm_inbound_ports".into(), &inbound_ports)?;
+        Reflect::set(&msg, &"__wwm_worker_count".into(), &JsValue::from_f64(worker_count as f64))?;
 
-        manager.workers.insert(
-            worker_id,
-            WorkerState {
-                worker,
-                status: WorkerStatus::Initializing,
-                _onmessage_closure: onmessage_closure,
-            },
-        );
+        // Transfer the MessagePorts
+        let transfer = Array::new();
+        for j in 0..worker_count {
+            if j != worker_idx {
+                if let Some(ref channel) = channels[worker_idx][j] {
+                    transfer.push(&channel.port1());
+                }
+            }
+        }
+        for i in 0..worker_count {
+            if i != worker_idx {
+                if let Some(ref channel) = channels[i][worker_idx] {
+                    transfer.push(&channel.port2());
+                }
+            }
+        }
 
-        Ok(worker_id)
-    })
+        worker.post_message_with_transfer(&msg, &transfer)?;
+
+        workers.push(Some(WorkerState {
+            worker,
+            status: WorkerStatus::Initializing,
+            _onmessage_closure: onmessage_closure,
+        }));
+    }
+
+    // Store state
+    MAIN_THREAD_STATE.with(|state| {
+        *state.borrow_mut() = Some(MainThreadState {
+            workers,
+            worker_count,
+            _channel_closures: Vec::new(),
+        });
+    });
+
+    Ok(())
 }
 
-/// Handle a message received from a worker (called on main thread).
-fn handle_worker_message(worker_id: WorkerId, event: MessageEvent) {
+/// Handle a message received from a worker on main thread.
+fn handle_message_from_worker(sender_id: ThreadId, event: MessageEvent) {
     let data = event.data();
 
     // Check for __wwm_callback field (task message)
@@ -272,15 +420,13 @@ fn handle_worker_message(worker_id: WorkerId, event: MessageEvent) {
 
     if let Some(ref arr) = callback_arr {
         if !arr.is_undefined() && !arr.is_null() {
-            // This is a task message
             if let Some((data_ptr, vtable_ptr)) = parse_callback_array(arr) {
                 let js_payload = Reflect::get(&data, &"__wwm_js_payload".into())
                     .unwrap_or(JsValue::UNDEFINED);
 
                 // Reconstruct fat pointer and call the callback
-                let callback: Box<MainCallback> = unsafe { reconstruct_box(data_ptr, vtable_ptr) };
-                callback(worker_id, js_payload);
-                // callback is dropped here
+                let callback: Box<ThreadCallback> = unsafe { reconstruct_box(data_ptr, vtable_ptr) };
+                callback(sender_id, js_payload);
                 return;
             }
         }
@@ -288,96 +434,197 @@ fn handle_worker_message(worker_id: WorkerId, event: MessageEvent) {
 
     // Unknown message format
     web_sys::console::error_1(
-        &format!("[WWM] Unknown message format from worker {:?}: {:?}", worker_id, data).into(),
+        &format!("[WWM] Unknown message format from worker {:?}: {:?}", sender_id, data).into(),
     );
 }
 
-/// Send a task message from main thread to a worker.
-///
-/// The `callback` will be invoked on the worker side with the `js_payload`.
-/// Must be called from main thread.
-#[track_caller]
-pub fn send_to_worker(
-    worker_id: WorkerId,
-    callback: Box<WorkerCallback>,
-    js_payload: &JsValue,
-) -> Result<(), JsValue> {
-    assert_main_thread();
-    with_manager(|manager| {
-        let state = manager
-            .workers
-            .get(&worker_id)
-            .ok_or_else(|| JsValue::from_str("Worker not found"))?;
+/// Handle a message received via MessageChannel (worker-to-worker).
+fn handle_message_from_channel(sender_id: ThreadId, event: MessageEvent) {
+    let data = event.data();
 
-        // Decompose fat pointer
-        let (data_ptr, vtable_ptr) = decompose_box(callback);
+    let callback_arr = Reflect::get(&data, &"__wwm_callback".into()).ok();
 
-        // Create task message
-        let msg = Object::new();
-        Reflect::set(&msg, &"__wwm_callback".into(), &create_callback_array(data_ptr, vtable_ptr))?;
-        Reflect::set(&msg, &"__wwm_js_payload".into(), js_payload)?;
+    if let Some(ref arr) = callback_arr {
+        if !arr.is_undefined() && !arr.is_null() {
+            if let Some((data_ptr, vtable_ptr)) = parse_callback_array(arr) {
+                let js_payload = Reflect::get(&data, &"__wwm_js_payload".into())
+                    .unwrap_or(JsValue::UNDEFINED);
 
-        state.worker.post_message(&msg)?;
+                let callback: Box<ThreadCallback> = unsafe { reconstruct_box(data_ptr, vtable_ptr) };
+                callback(sender_id, js_payload);
+                return;
+            }
+        }
+    }
 
-        Ok(())
-    })
+    web_sys::console::error_1(
+        &format!("[WWM] Unknown message format from channel (sender {:?}): {:?}", sender_id, data).into(),
+    );
 }
 
-/// Send a task message from worker to main thread.
+/// Send a message to any thread (main or worker).
 ///
-/// The `callback` will be invoked on the main thread with worker ID and js_payload.
-/// Must be called from a worker thread.
+/// The `callback` will be invoked on the target thread with sender's ThreadId and js_payload.
+///
+/// Routing:
+/// - To main thread (ThreadId(0)): uses `self.postMessage()` from worker
+/// - From main thread to worker: uses `Worker.postMessage()`
+/// - From worker to worker: uses MessageChannel
 #[track_caller]
-pub fn send_to_main(
-    callback: Box<MainCallback>,
+pub fn send_to_thread(
+    target: ThreadId,
+    callback: Box<ThreadCallback>,
     js_payload: &JsValue,
 ) -> Result<(), JsValue> {
-    assert_worker_thread();
-    let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
+    let my_id = my_thread_id();
 
     // Decompose fat pointer
     let (data_ptr, vtable_ptr) = decompose_box(callback);
 
-    // Create task message
+    // Create message
     let msg = Object::new();
     Reflect::set(&msg, &"__wwm_callback".into(), &create_callback_array(data_ptr, vtable_ptr))?;
     Reflect::set(&msg, &"__wwm_js_payload".into(), js_payload)?;
+    Reflect::set(&msg, &"__wwm_sender_id".into(), &JsValue::from_f64(my_id.0 as f64))?;
 
-    global.post_message(&msg)?;
+    if my_id.is_main() {
+        // Main thread sending to worker
+        if target.is_main() {
+            return Err(JsValue::from_str("Cannot send from main thread to itself"));
+        }
 
-    Ok(())
+        with_main_state(|state| {
+            let worker_state = state.workers
+                .get(target.0 as usize)
+                .and_then(|s| s.as_ref())
+                .ok_or_else(|| JsValue::from_str("Worker not found"))?;
+
+            worker_state.worker.post_message(&msg)?;
+            Ok(())
+        })
+    } else if target.is_main() {
+        // Worker sending to main thread
+        let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
+        global.post_message(&msg)?;
+        Ok(())
+    } else {
+        // Worker sending to another worker via MessageChannel
+        WORKER_THREAD_STATE.with(|state| {
+            let state = state.borrow();
+            let state = state.as_ref().expect("Worker not initialized");
+
+            // outbound_ports index: target ThreadId - 1 (since workers are 1-indexed)
+            let port_idx = (target.0 - 1) as usize;
+            let port = state.outbound_ports
+                .get(port_idx)
+                .and_then(|p| p.as_ref())
+                .ok_or_else(|| JsValue::from_str("No MessagePort to target worker"))?;
+
+            port.post_message(&msg)?;
+            Ok(())
+        })
+    }
 }
 
 /// Get the status of a worker. Must be called from main thread.
 #[track_caller]
-pub fn get_worker_status(worker_id: WorkerId) -> Option<WorkerStatus> {
+pub fn get_worker_status(thread_id: ThreadId) -> Option<WorkerStatus> {
     assert_main_thread();
-    with_manager(|manager| manager.workers.get(&worker_id).map(|s| s.status))
+    if thread_id.is_main() {
+        return None; // Main thread doesn't have a WorkerStatus
+    }
+    with_main_state(|state| {
+        state.workers
+            .get(thread_id.0 as usize)
+            .and_then(|s| s.as_ref())
+            .map(|s| s.status)
+    })
 }
 
-/// Get all worker IDs. Must be called from main thread.
+/// Get all worker ThreadIds. Must be called from main thread.
 #[track_caller]
-pub fn get_all_worker_ids() -> Vec<WorkerId> {
+pub fn get_all_worker_ids() -> Vec<ThreadId> {
     assert_main_thread();
-    with_manager(|manager| manager.workers.keys().copied().collect())
+    with_main_state(|state| {
+        (1..=state.worker_count)
+            .map(|i| ThreadId(i as u32))
+            .collect()
+    })
+}
+
+/// Initialize worker thread state. Called from worker.js after WASM init.
+/// Internal function - do not call directly.
+#[wasm_bindgen(js_name = __wwm_internal_worker_init)]
+pub fn __wwm_internal_worker_init(
+    thread_id: u32,
+    outbound_ports: JsValue,
+    inbound_ports: JsValue,
+    worker_count: u32,
+) {
+    assert_worker_thread();
+
+    let thread_id = ThreadId(thread_id);
+
+    // Set thread ID
+    MY_THREAD_ID.with(|id| id.set(Some(thread_id)));
+
+    // Parse outbound ports
+    let outbound_arr: Array = outbound_ports.unchecked_into();
+    let mut outbound: Vec<Option<MessagePort>> = Vec::with_capacity(worker_count as usize);
+    for i in 0..worker_count {
+        let port = outbound_arr.get(i);
+        if port.is_null() || port.is_undefined() {
+            outbound.push(None);
+        } else {
+            outbound.push(Some(port.unchecked_into()));
+        }
+    }
+
+    // Parse inbound ports and set up onmessage handlers
+    let inbound_arr: Array = inbound_ports.unchecked_into();
+    let mut inbound_closures: Vec<Closure<dyn FnMut(MessageEvent)>> = Vec::new();
+
+    for i in 0..worker_count {
+        let port_val = inbound_arr.get(i);
+        if !port_val.is_null() && !port_val.is_undefined() {
+            let port: MessagePort = port_val.unchecked_into();
+            let sender_id = ThreadId(i + 1); // Worker i+1 sends via this port
+
+            let closure = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+                handle_message_from_channel(sender_id, event);
+            });
+
+            port.set_onmessage(Some(closure.as_ref().unchecked_ref()));
+            port.start(); // Start receiving messages
+            inbound_closures.push(closure);
+        }
+    }
+
+    // Store state
+    WORKER_THREAD_STATE.with(|state| {
+        *state.borrow_mut() = Some(WorkerThreadState {
+            my_thread_id: thread_id,
+            outbound_ports: outbound,
+            _inbound_closures: inbound_closures,
+        });
+    });
 }
 
 /// Handler for task messages received by a worker. Called from worker.js.
-/// Internal function. Do not call directly. (It's public because wasm-bindgen can only export public functions to JS)
+/// Internal function - do not call directly.
 ///
+/// `sender_id` is the sender's ThreadId.
 /// `callback_arr` is the `__wwm_callback` JS array containing [data_ptr, vtable_ptr].
 /// `js_payload` is the `__wwm_js_payload` value.
-///
-/// Must be called from a worker thread.
 #[wasm_bindgen(js_name = __wwm_internal_worker_handle_message)]
-pub fn __wwm_internal_worker_handle_message(callback_arr: JsValue, js_payload: JsValue) {
+pub fn __wwm_internal_worker_handle_message(sender_id: u32, callback_arr: JsValue, js_payload: JsValue) {
     assert_worker_thread();
 
+    let sender_id = ThreadId(sender_id);
+
     if let Some((data_ptr, vtable_ptr)) = parse_callback_array(&callback_arr) {
-        // Reconstruct fat pointer and call the callback
-        let callback: Box<WorkerCallback> = unsafe { reconstruct_box(data_ptr, vtable_ptr) };
-        callback(js_payload);
-        // callback is dropped here
+        let callback: Box<ThreadCallback> = unsafe { reconstruct_box(data_ptr, vtable_ptr) };
+        callback(sender_id, js_payload);
     } else {
         web_sys::console::error_1(&"[WWM] Invalid callback array format".into());
     }

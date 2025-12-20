@@ -37,6 +37,8 @@ features = [
   'Worker',
   'DedicatedWorkerGlobalScope',
   'MessageEvent',
+  "MessagePort",
+  "MessageChannel",
   "WorkerOptions",
   "WorkerType",
   "console",
