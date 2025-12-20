@@ -1,5 +1,7 @@
 //! Web Worker Manager for managing web workers and message passing.
 //!
+//! Note: it's work-in-progress
+//!
 //! ## Background: Web Multi-threading Limitations
 //!
 //! In-browser WASM multi-threading has restrictions:
@@ -125,7 +127,7 @@ impl WebWorkerManager {
     }
 
     /// Update worker status. Called internally.
-    pub fn set_worker_status(&mut self, worker_id: WorkerId, status: WorkerStatus) {
+    fn set_worker_status(&mut self, worker_id: WorkerId, status: WorkerStatus) {
         if let Some(state) = self.workers.get_mut(&worker_id) {
             state.status = status;
         }
@@ -220,8 +222,24 @@ pub fn spawn_worker(
         });
         worker.set_onmessage(Some(onmessage_closure.as_ref().unchecked_ref()));
 
-        // Decompose the init callback fat pointer
-        let (data_ptr, vtable_ptr) = decompose_box(on_init);
+        // Wrap user's on_init callback to automatically send status update after it runs
+        let wrapped_on_init: Box<dyn FnOnce(JsValue) + Send> = Box::new(move |js_payload| {
+            // Run user's init callback first
+            on_init(js_payload);
+
+            // Then send status update to main thread
+            let _ = send_to_main(
+                Box::new(move |worker_id, _| {
+                    with_manager_mut(|manager| {
+                        manager.set_worker_status(worker_id, WorkerStatus::Normal);
+                    });
+                }),
+                &JsValue::UNDEFINED,
+            );
+        });
+
+        // Decompose the wrapped init callback fat pointer
+        let (data_ptr, vtable_ptr) = decompose_box(wrapped_on_init);
 
         // Send init message with new protocol
         let msg = Object::new();
