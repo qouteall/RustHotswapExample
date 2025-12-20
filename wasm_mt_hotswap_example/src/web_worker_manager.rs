@@ -52,16 +52,16 @@
 //!   __wwm_js_payload: any,                 // user-defined payload
 //!   __wwm_thread_id: number,               // this worker's ThreadId (1..=n)
 //!   __wwm_sender_id: number,               // sender's ThreadId (always 0 for init)
-//!   __wwm_outbound_ports: [MessagePort | null, ...],  // ports to send to other workers
-//!   __wwm_inbound_ports: [MessagePort | null, ...],   // ports to receive from other workers
-//!   __wwm_worker_count: number             // total number of workers
+//!   __wwm_ports: [MessagePort | null, ...],  // bidirectional ports to other workers
+//!   __wwm_thread_count: number             // total number of threads (worker_count + 1)
 //! }
 //! ```
 //!
-//! Port arrays:
-//! `outbound_ports[i]` is the port to send to worker `i+1`.
-//! `inbound_ports[i]` is the port to receive from worker `i+1`.
-//! Self-referencing entries are `null` (e.g., worker 1's `outbound_ports[0]` is null).
+//! Port array is indexed by ThreadId (index 0 = main thread, 1..=n = workers):
+//! - `ports[tid]` is the bidirectional port to communicate with `ThreadId(tid)`
+//! - Each `MessageChannel` is shared between two workers (smaller tid gets port1, larger gets port2)
+//! - `ports[0]` is always `null` (main thread uses postMessage, not MessageChannel)
+//! - `ports[my_tid]` is `null` (no port to self)
 //!
 //! Task message (any direction - main↔worker or worker↔worker):
 //! ```text
@@ -85,7 +85,7 @@ use crate::utils::{decompose_box, reconstruct_box};
 use crate::web_mutex::{is_main_thread, is_worker_thread_cached};
 
 /// Unified callback type for messages between any threads.
-/// Receives sender's ThreadId and the JS payload.
+/// First argument is sender thread ID. Second argument is JS payload.
 type ThreadCallback = dyn FnOnce(ThreadId, JsValue) + Send;
 
 /// Assert that we're on the main thread, panic otherwise.
@@ -121,23 +121,115 @@ impl ThreadId {
 }
 
 /// Status of a web worker.
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerStatus {
+    /// Not yet spawned or invalid ThreadId.
+    Uninitialized = 0,
     /// Spawned but haven't yet received finish init message.
     /// We can send task messages to workers in this status. Browser queues them.
-    Initializing,
+    Initializing = 1,
     /// The finish init message has been received.
-    Normal,
+    Normal = 2,
     /// Currently doing dynamic linking (not implemented yet).
-    DynamicLinking,
-    /// Gracefully exiting (not implemented yet).
-    Finalizing,
+    DynamicLinking = 3,
+}
+
+impl WorkerStatus {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => WorkerStatus::Initializing,
+            2 => WorkerStatus::Normal,
+            3 => WorkerStatus::DynamicLinking,
+            _ => WorkerStatus::Uninitialized,
+        }
+    }
+}
+
+/// Cache-line padded atomic for worker status to avoid false sharing.
+#[repr(C, align(64))]
+struct PaddedAtomicU8 {
+    value: std::sync::atomic::AtomicU8,
+    _padding: [u8; 63],
+}
+
+impl PaddedAtomicU8 {
+    fn new(v: u8) -> Self {
+        Self {
+            value: std::sync::atomic::AtomicU8::new(v),
+            _padding: [0; 63],
+        }
+    }
+}
+
+/// Global worker status array. Late-initialized during `init_web_worker_manager`.
+/// Pointer to leaked Box<[PaddedAtomicU8]> for 'static lifetime.
+static WORKER_STATUS: std::sync::atomic::AtomicPtr<PaddedAtomicU8> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Number of workers (set during init).
+static THREAD_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Initialize the global worker status array. Called once during init.
+fn init_worker_status_array(count: usize) {
+    let mut vec: Vec<PaddedAtomicU8> = Vec::with_capacity(count);
+    for _ in 0..count {
+        vec.push(PaddedAtomicU8::new(WorkerStatus::Uninitialized as u8));
+    }
+    let boxed: Box<[PaddedAtomicU8]> = vec.into_boxed_slice();
+    let leaked: &'static mut [PaddedAtomicU8] = Box::leak(boxed);
+
+    WORKER_STATUS.store(leaked.as_mut_ptr(), std::sync::atomic::Ordering::Release);
+    THREAD_COUNT.store(count, std::sync::atomic::Ordering::Release);
+}
+
+/// Get the worker status array. Returns None if not initialized.
+fn get_worker_status_array() -> Option<&'static [PaddedAtomicU8]> {
+    let ptr = WORKER_STATUS.load(std::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() {
+        return None;
+    }
+    let count = THREAD_COUNT.load(std::sync::atomic::Ordering::Acquire);
+    // SAFETY: ptr was leaked from a Box<[PaddedAtomicU8]> with `count` elements
+    Some(unsafe { std::slice::from_raw_parts(ptr, count) })
+}
+
+/// Get the status of a worker. Can be called from any thread.
+pub fn get_worker_status(thread_id: ThreadId) -> WorkerStatus {
+    if thread_id.is_main() {
+        return WorkerStatus::Normal;
+    }
+    let Some(arr) = get_worker_status_array() else {
+        return WorkerStatus::Uninitialized;
+    };
+    let idx = (thread_id.0 - 1) as usize; // ThreadId 1 -> index 0
+    if idx >= arr.len() {
+        return WorkerStatus::Uninitialized;
+    }
+    let v = arr[idx].value.load(std::sync::atomic::Ordering::Acquire);
+    WorkerStatus::from_u8(v)
+}
+
+/// Set the status of a worker. Can be called from any thread.
+/// No-op if worker manager not initialized or invalid ThreadId.
+pub fn set_worker_status(thread_id: ThreadId, status: WorkerStatus) {
+    if thread_id.is_main() {
+        return;
+    }
+    let Some(arr) = get_worker_status_array() else {
+        return;
+    };
+    let idx = (thread_id.0 - 1) as usize; // ThreadId 1 -> index 0
+    if idx >= arr.len() {
+        return;
+    }
+    arr[idx].value.store(status as u8, std::sync::atomic::Ordering::Release);
 }
 
 /// Internal state for a single worker (main thread only).
-struct WorkerState {
+struct WorkerStateForMainThread {
     worker: Worker,
-    status: WorkerStatus,
     /// The onmessage closure, kept alive to prevent GC.
     _onmessage_closure: Closure<dyn FnMut(MessageEvent)>,
 }
@@ -145,9 +237,7 @@ struct WorkerState {
 /// Main thread state for the web worker manager.
 struct MainThreadState {
     /// Worker states indexed by ThreadId (1-indexed, so index 0 is unused).
-    workers: Vec<Option<WorkerState>>,
-    /// Number of workers.
-    worker_count: usize,
+    workers: Vec<Option<WorkerStateForMainThread>>,
     /// Closures for MessageChannel onmessage handlers (kept alive to prevent GC).
     /// Not used on main thread, but stored here during init before transfer.
     _channel_closures: Vec<Closure<dyn FnMut(MessageEvent)>>,
@@ -155,13 +245,13 @@ struct MainThreadState {
 
 /// Worker thread state (thread-local on each worker).
 struct WorkerThreadState {
-    /// This worker's ThreadId.
-    my_thread_id: ThreadId,
-    /// Outbound MessagePorts to other workers. Index i = port to worker i+1.
-    /// Index 0 is unused (no port to main thread via MessageChannel).
-    outbound_ports: Vec<Option<MessagePort>>,
-    /// Closures for inbound MessageChannel onmessage handlers (kept alive to prevent GC).
-    _inbound_closures: Vec<Closure<dyn FnMut(MessageEvent)>>,
+    /// MessagePorts to other workers, indexed by ThreadId.
+    /// ports[tid] = port to communicate with ThreadId(tid)
+    /// - ports[0] = None (main thread uses postMessage, not MessageChannel)
+    /// - ports[my_tid] = None (no port to self)
+    ports: Vec<Option<MessagePort>>,
+    /// Closures for MessageChannel onmessage handlers (kept alive to prevent GC).
+    _port_closures: Vec<Closure<dyn FnMut(MessageEvent)>>,
 }
 
 thread_local! {
@@ -186,11 +276,11 @@ pub fn my_thread_id() -> ThreadId {
 pub fn worker_count() -> usize {
     if is_main_thread() {
         MAIN_THREAD_STATE.with(|state| {
-            state.borrow().as_ref().expect("WebWorkerManager not initialized").worker_count
+            state.borrow().as_ref().expect("WebWorkerManager not initialized").workers.len()
         })
     } else {
         WORKER_THREAD_STATE.with(|state| {
-            state.borrow().as_ref().expect("Worker not initialized").outbound_ports.len()
+            state.borrow().as_ref().expect("Worker not initialized").ports.len()
         })
     }
 }
@@ -257,39 +347,47 @@ pub fn init_web_worker_manager(
         }
     });
 
+    // Terminology:
+    // - worker_count: number of web workers (excluding main thread)
+    // - thread_count: total threads = worker_count + 1 (including main thread)
+    // - worker_idx: 0-based index for workers (0..worker_count)
+    // - thread_id: ThreadId value (0 = main, 1..=worker_count = workers)
+    //   thread_id = worker_idx + 1
+
     // Set main thread's ID
     MY_THREAD_ID.with(|id| id.set(Some(ThreadId::MAIN)));
 
+    let thread_count = worker_count + 1;
+
+    // Initialize global worker status array (indexed by thread_id, so size = thread_count)
+    init_worker_status_array(thread_count);
+
     // Create MessageChannels for worker-to-worker communication.
-    // channels[i][j] = channel for worker i+1 to send to worker j+1 (0-indexed arrays)
-    // We only need channels where i != j
-    let mut channels: Vec<Vec<Option<MessageChannel>>> = Vec::with_capacity(worker_count);
-    for i in 0..worker_count {
-        let mut row = Vec::with_capacity(worker_count);
-        for j in 0..worker_count {
-            if i != j {
-                row.push(Some(MessageChannel::new()?));
-            } else {
-                row.push(None); // No channel to self
-            }
+    // Each MessageChannel is bidirectional, so we only need n*(n-1)/2 channels.
+    // channels[i][j] where i < j stores the channel for workers i and j.
+    // Worker with smaller thread_id gets port1, larger gets port2.
+    // Index 0 row/col unused (main thread doesn't use MessageChannel).
+    let mut channels: Vec<Vec<Option<MessageChannel>>> = vec![vec![None; thread_count]; thread_count];
+    for i in 1..thread_count {
+        for j in (i + 1)..thread_count {
+            // Create one channel for each pair (i, j) where i < j
+            channels[i][j] = Some(MessageChannel::new()?);
         }
-        channels.push(row);
     }
 
     // Create workers
-    let mut workers: Vec<Option<WorkerState>> = Vec::with_capacity(worker_count + 1);
+    let mut workers: Vec<Option<WorkerStateForMainThread>> = Vec::with_capacity(thread_count);
     workers.push(None); // Index 0 unused (main thread)
 
     let on_init = std::sync::Arc::new(on_init);
 
     for worker_idx in 0..worker_count {
         let thread_id = ThreadId((worker_idx + 1) as u32);
+        let my_tid = thread_id.0 as usize;
 
-        // Create worker options for ES module worker
-        let options = WorkerOptions::new();
-        options.set_type(web_sys::WorkerType::Module);
-
-        let worker = Worker::new_with_options("./worker.js", &options)?;
+        let worker_options = WorkerOptions::new();
+        worker_options.set_type(web_sys::WorkerType::Module);
+        let worker = Worker::new_with_options("./worker.js", &worker_options)?;
 
         // Set up onmessage handler for this worker (for messages from worker to main)
         let thread_id_for_closure = thread_id;
@@ -298,35 +396,34 @@ pub fn init_web_worker_manager(
         });
         worker.set_onmessage(Some(onmessage_closure.as_ref().unchecked_ref()));
 
-        // Collect MessagePorts for this worker:
-        // - outbound_ports: ports this worker uses to SEND to other workers
-        //   outbound_ports[j] = port1 of channels[worker_idx][j] (for j != worker_idx)
-        // - inbound_ports: ports this worker uses to RECEIVE from other workers
-        //   inbound_ports[i] = port2 of channels[i][worker_idx] (for i != worker_idx)
-        let outbound_ports = Array::new();
-        let inbound_ports = Array::new();
+        // Collect MessagePorts for this worker.
+        // ports[tid] = port to communicate with ThreadId(tid)
+        // - ports[0] = null (main thread uses postMessage, not MessageChannel)
+        // - ports[my_tid] = null (no port to self)
+        // - For pair (my_tid, other_tid): smaller tid gets port1, larger gets port2
+        let ports = Array::new();
 
-        for j in 0..worker_count {
-            if j != worker_idx {
-                if let Some(ref channel) = channels[worker_idx][j] {
-                    outbound_ports.push(&channel.port1());
+        // Index 0 = main thread (no MessageChannel port)
+        ports.push(&JsValue::NULL);
+
+        // Index 1..thread_count = worker threads
+        for other_tid in 1..thread_count {
+            if other_tid == my_tid {
+                ports.push(&JsValue::NULL); // No port to self
+            } else if my_tid < other_tid {
+                // I'm the smaller tid, I get port1
+                if let Some(ref channel) = channels[my_tid][other_tid] {
+                    ports.push(&channel.port1());
                 } else {
-                    outbound_ports.push(&JsValue::NULL);
+                    ports.push(&JsValue::NULL);
                 }
             } else {
-                outbound_ports.push(&JsValue::NULL); // No port to self
-            }
-        }
-
-        for i in 0..worker_count {
-            if i != worker_idx {
-                if let Some(ref channel) = channels[i][worker_idx] {
-                    inbound_ports.push(&channel.port2());
+                // I'm the larger tid, I get port2
+                if let Some(ref channel) = channels[other_tid][my_tid] {
+                    ports.push(&channel.port2());
                 } else {
-                    inbound_ports.push(&JsValue::NULL);
+                    ports.push(&JsValue::NULL);
                 }
-            } else {
-                inbound_ports.push(&JsValue::NULL); // No port from self
             }
         }
 
@@ -342,19 +439,8 @@ pub fn init_web_worker_manager(
             // Run user's init callback
             on_init_clone(my_id);
 
-            // Send status update to main thread
-            // TODO review the purpose of state tracking. also can it be done without message passing
-            let _ = send_to_thread(
-                ThreadId::MAIN,
-                Box::new(move |_sender, _payload| {
-                    with_main_state_mut(|state| {
-                        if let Some(Some(worker_state)) = state.workers.get_mut(my_id.0 as usize) {
-                            worker_state.status = WorkerStatus::Normal;
-                        }
-                    });
-                }),
-                &JsValue::UNDEFINED,
-            );
+            // Update status to Normal (global atomic, no message passing needed)
+            set_worker_status(my_id, WorkerStatus::Normal);
         });
 
         // Decompose the callback fat pointer
@@ -368,33 +454,33 @@ pub fn init_web_worker_manager(
         Reflect::set(&msg, &"__wwm_js_payload".into(), &JsValue::UNDEFINED)?;
         Reflect::set(&msg, &"__wwm_thread_id".into(), &JsValue::from_f64(thread_id.0 as f64))?;
         Reflect::set(&msg, &"__wwm_sender_id".into(), &JsValue::from_f64(ThreadId::MAIN.0 as f64))?;
-        // MessageChannel ports (separate from user payload)
-        Reflect::set(&msg, &"__wwm_outbound_ports".into(), &outbound_ports)?;
-        Reflect::set(&msg, &"__wwm_inbound_ports".into(), &inbound_ports)?;
-        Reflect::set(&msg, &"__wwm_worker_count".into(), &JsValue::from_f64(worker_count as f64))?;
+        // MessageChannel ports (indexed by thread_id)
+        Reflect::set(&msg, &"__wwm_ports".into(), &ports)?;
+        Reflect::set(&msg, &"__wwm_thread_count".into(), &JsValue::from_f64(thread_count as f64))?;
 
         // Transfer the MessagePorts
         let transfer = Array::new();
-        for j in 0..worker_count {
-            if j != worker_idx {
-                if let Some(ref channel) = channels[worker_idx][j] {
-                    transfer.push(&channel.port1());
-                }
-            }
-        }
-        for i in 0..worker_count {
-            if i != worker_idx {
-                if let Some(ref channel) = channels[i][worker_idx] {
-                    transfer.push(&channel.port2());
+        for other_tid in 1..thread_count {
+            if other_tid != my_tid {
+                if my_tid < other_tid {
+                    if let Some(ref channel) = channels[my_tid][other_tid] {
+                        transfer.push(&channel.port1());
+                    }
+                } else {
+                    if let Some(ref channel) = channels[other_tid][my_tid] {
+                        transfer.push(&channel.port2());
+                    }
                 }
             }
         }
 
         worker.post_message_with_transfer(&msg, &transfer)?;
 
-        workers.push(Some(WorkerState {
+        // Set status to Initializing via global atomic
+        set_worker_status(thread_id, WorkerStatus::Initializing);
+
+        workers.push(Some(WorkerStateForMainThread {
             worker,
-            status: WorkerStatus::Initializing,
             _onmessage_closure: onmessage_closure,
         }));
     }
@@ -403,7 +489,6 @@ pub fn init_web_worker_manager(
     MAIN_THREAD_STATE.with(|state| {
         *state.borrow_mut() = Some(MainThreadState {
             workers,
-            worker_count,
             _channel_closures: Vec::new(),
         });
     });
@@ -466,22 +551,39 @@ fn handle_message_from_channel(sender_id: ThreadId, event: MessageEvent) {
 ///
 /// The `callback` will be invoked on the target thread with sender's ThreadId and js_payload.
 ///
+/// The optional `transfer` array specifies objects to transfer (not clone) to the target thread.
+/// Use this for transferable objects like `OffscreenCanvas`, `MessagePort`, `ArrayBuffer`, etc.
+///
 /// Routing:
-/// - To main thread (ThreadId(0)): uses `self.postMessage()` from worker
-/// - From main thread to worker: uses `Worker.postMessage()`
-/// - From worker to worker: uses MessageChannel
+/// - Main to main: uses `queueMicrotask`
+/// - Main to worker: uses `Worker.postMessage()`
+/// - Worker to main: uses `self.postMessage()`
+/// - Worker to worker: uses MessageChannel
 #[track_caller]
 pub fn send_to_thread(
     target: ThreadId,
     callback: Box<ThreadCallback>,
     js_payload: &JsValue,
+    transfer: Option<&Array>,
 ) -> Result<(), JsValue> {
     let my_id = my_thread_id();
 
-    // Decompose fat pointer
-    let (data_ptr, vtable_ptr) = decompose_box(callback);
+    if my_id.is_main() && target.is_main() {
+        // Main thread sending to itself - use queueMicrotask
+        // Note: transfer is ignored for main-to-main (no actual message passing)
+        let js_payload_clone = js_payload.clone();
+        let closure = Closure::once(move || {
+            callback(ThreadId::MAIN, js_payload_clone);
+        });
+
+        let window = web_sys::window().expect("no window");
+        window.queue_microtask(closure.as_ref().unchecked_ref());
+        closure.forget(); // TODO check whether it leaks memory
+        return Ok(());
+    }
 
     // Create message
+    let (data_ptr, vtable_ptr) = decompose_box(callback);
     let msg = Object::new();
     Reflect::set(&msg, &"__wwm_callback".into(), &create_callback_array(data_ptr, vtable_ptr))?;
     Reflect::set(&msg, &"__wwm_js_payload".into(), js_payload)?;
@@ -489,23 +591,27 @@ pub fn send_to_thread(
 
     if my_id.is_main() {
         // Main thread sending to worker
-        if target.is_main() {
-            return Err(JsValue::from_str("Cannot send from main thread to itself"));
-        }
-
         with_main_state(|state| {
             let worker_state = state.workers
                 .get(target.0 as usize)
                 .and_then(|s| s.as_ref())
                 .ok_or_else(|| JsValue::from_str("Worker not found"))?;
 
-            worker_state.worker.post_message(&msg)?;
+            if let Some(transfer) = transfer {
+                worker_state.worker.post_message_with_transfer(&msg, transfer)?;
+            } else {
+                worker_state.worker.post_message(&msg)?;
+            }
             Ok(())
         })
     } else if target.is_main() {
         // Worker sending to main thread
         let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
-        global.post_message(&msg)?;
+        if let Some(transfer) = transfer {
+            global.post_message_with_transfer(&msg, transfer)?;
+        } else {
+            global.post_message(&msg)?;
+        }
         Ok(())
     } else {
         // Worker sending to another worker via MessageChannel
@@ -513,43 +619,20 @@ pub fn send_to_thread(
             let state = state.borrow();
             let state = state.as_ref().expect("Worker not initialized");
 
-            // outbound_ports index: target ThreadId - 1 (since workers are 1-indexed)
-            let port_idx = (target.0 - 1) as usize;
-            let port = state.outbound_ports
-                .get(port_idx)
+            // ports[tid] = bidirectional port to ThreadId(tid)
+            let port = state.ports
+                .get(target.0 as usize)
                 .and_then(|p| p.as_ref())
                 .ok_or_else(|| JsValue::from_str("No MessagePort to target worker"))?;
 
-            port.post_message(&msg)?;
+            if let Some(transfer) = transfer {
+                port.post_message_with_transferable(&msg, transfer)?;
+            } else {
+                port.post_message(&msg)?;
+            }
             Ok(())
         })
     }
-}
-
-/// Get the status of a worker. Must be called from main thread.
-#[track_caller]
-pub fn get_worker_status(thread_id: ThreadId) -> Option<WorkerStatus> {
-    assert_main_thread();
-    if thread_id.is_main() {
-        return None; // Main thread doesn't have a WorkerStatus
-    }
-    with_main_state(|state| {
-        state.workers
-            .get(thread_id.0 as usize)
-            .and_then(|s| s.as_ref())
-            .map(|s| s.status)
-    })
-}
-
-/// Get all worker ThreadIds. Must be called from main thread.
-#[track_caller]
-pub fn get_all_worker_ids() -> Vec<ThreadId> {
-    assert_main_thread();
-    with_main_state(|state| {
-        (1..=state.worker_count)
-            .map(|i| ThreadId(i as u32))
-            .collect()
-    })
 }
 
 /// Initialize worker thread state. Called from worker.js after WASM init.
@@ -557,9 +640,8 @@ pub fn get_all_worker_ids() -> Vec<ThreadId> {
 #[wasm_bindgen(js_name = __wwm_internal_worker_init)]
 pub fn __wwm_internal_worker_init(
     thread_id: u32,
-    outbound_ports: JsValue,
-    inbound_ports: JsValue,
-    worker_count: u32,
+    ports_js: JsValue,
+    thread_count: u32,
 ) {
     assert_worker_thread();
 
@@ -568,44 +650,41 @@ pub fn __wwm_internal_worker_init(
     // Set thread ID
     MY_THREAD_ID.with(|id| id.set(Some(thread_id)));
 
-    // Parse outbound ports
-    let outbound_arr: Array = outbound_ports.unchecked_into();
-    let mut outbound: Vec<Option<MessagePort>> = Vec::with_capacity(worker_count as usize);
-    for i in 0..worker_count {
-        let port = outbound_arr.get(i);
-        if port.is_null() || port.is_undefined() {
-            outbound.push(None);
+    // ports[tid] = port to communicate with ThreadId(tid)
+    // - ports[0] = null (main thread uses postMessage, not MessageChannel)
+    // - ports[my_tid] = null (no port to self)
+    // Each port is bidirectional (same port for send and receive).
+    let ports_arr: Array = ports_js.unchecked_into();
+    let mut ports: Vec<Option<MessagePort>> = Vec::with_capacity(thread_count as usize);
+    let mut port_closures: Vec<Closure<dyn FnMut(MessageEvent)>> = Vec::new();
+
+    for tid in 0..thread_count {
+        let port_val = ports_arr.get(tid);
+        if port_val.is_null() || port_val.is_undefined() {
+            ports.push(None);
         } else {
-            outbound.push(Some(port.unchecked_into()));
-        }
-    }
-
-    // Parse inbound ports and set up onmessage handlers
-    let inbound_arr: Array = inbound_ports.unchecked_into();
-    let mut inbound_closures: Vec<Closure<dyn FnMut(MessageEvent)>> = Vec::new();
-
-    for i in 0..worker_count {
-        let port_val = inbound_arr.get(i);
-        if !port_val.is_null() && !port_val.is_undefined() {
             let port: MessagePort = port_val.unchecked_into();
-            let sender_id = ThreadId(i + 1); // Worker i+1 sends via this port
 
+            // Set up onmessage handler for this port
+            // Messages from ThreadId(tid) arrive on this port
+            let sender_id = ThreadId(tid);
             let closure = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
                 handle_message_from_channel(sender_id, event);
             });
 
             port.set_onmessage(Some(closure.as_ref().unchecked_ref()));
             port.start(); // Start receiving messages
-            inbound_closures.push(closure);
+            port_closures.push(closure);
+
+            ports.push(Some(port));
         }
     }
 
     // Store state
     WORKER_THREAD_STATE.with(|state| {
         *state.borrow_mut() = Some(WorkerThreadState {
-            my_thread_id: thread_id,
-            outbound_ports: outbound,
-            _inbound_closures: inbound_closures,
+            ports,
+            _port_closures: port_closures,
         });
     });
 }

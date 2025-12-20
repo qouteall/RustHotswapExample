@@ -81,16 +81,16 @@ The web worker manager takes over JS message passing between all threads.
   __wwm_js_payload: any,                 // user-defined payload
   __wwm_thread_id: number,               // this worker's ThreadId (1..=n)
   __wwm_sender_id: number,               // sender's ThreadId (always 0 for init)
-  __wwm_outbound_ports: [MessagePort | null, ...],  // ports to send to other workers
-  __wwm_inbound_ports: [MessagePort | null, ...],   // ports to receive from other workers
-  __wwm_worker_count: number             // total number of workers
+  __wwm_ports: [MessagePort | null, ...],  // bidirectional ports to other workers
+  __wwm_thread_count: number             // total number of threads (worker_count + 1)
 }
 ```
 
-Port arrays are indexed by worker index (0-based, corresponding to ThreadId 1..=n).
-`outbound_ports[i]` is the port to send to worker `i+1`.
-`inbound_ports[i]` is the port to receive from worker `i+1`.
-Self-referencing entries are `null`.
+Port array is indexed by ThreadId (index 0 = main thread, 1..=n = workers):
+- `ports[tid]` is the bidirectional port to communicate with `ThreadId(tid)`
+- Each `MessageChannel` is shared between two workers (smaller tid gets port1, larger gets port2)
+- `ports[0]` is always `null` (main thread uses postMessage, not MessageChannel)
+- `ports[my_tid]` is `null` (no port to self)
 
 **Task message (any direction - main↔worker or worker↔worker):**
 ```
@@ -106,7 +106,12 @@ The callback fat pointer is heap-allocated by the sender and dropped by the rece
 #### Unified send API
 
 ```rust
-send_to_thread(target: ThreadId, callback: Box<dyn FnOnce(ThreadId, JsValue) + Send>, js_payload: &JsValue)
+send_to_thread(
+    target: ThreadId,
+    callback: Box<dyn FnOnce(ThreadId, JsValue) + Send>,
+    js_payload: &JsValue,
+    transfer: Option<&Array>,  // for transferable objects like OffscreenCanvas, ArrayBuffer
+)
 ```
 
 Routing:

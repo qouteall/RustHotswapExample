@@ -36,11 +36,11 @@ self.onmessage = async (event) => {
     await wasmInit;
 
     // Initialize worker thread state with MessagePorts
-    const outboundPorts = data.__wwm_outbound_ports || [];
-    const inboundPorts = data.__wwm_inbound_ports || [];
-    const workerCount = data.__wwm_worker_count || 0;
+    // ports[tid] = port to communicate with ThreadId(tid)
+    const ports = data.__wwm_ports || [];
+    const threadCount = data.__wwm_thread_count || 0;
 
-    __wwm_internal_worker_init(threadId, outboundPorts, inboundPorts, workerCount);
+    __wwm_internal_worker_init(threadId, ports, threadCount);
 
     // Run the init callback if provided
     if ('__wwm_callback' in data) {
