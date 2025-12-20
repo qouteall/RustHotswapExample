@@ -102,3 +102,20 @@ Note that wasm-bindgen has functionality of using Rust type to hold JS value. Th
 
 https://wasm-bindgen.github.io/wasm-bindgen/contributing/design/js-objects-in-rust.html
 
+#### SimpleRoundRobinWebThreadPool
+
+A simple thread pool built on top of web worker manager.
+
+- Created and used only on main thread (not a global singleton, multiple instances can coexist)
+- `new(size: usize)` creates the pool with specified number of workers
+- Workers are created via web worker manager's `spawn_worker()`
+- Init callback just sends message back to update worker status to Normal
+- Uses round-robin to dispatch tasks (keeps index of next worker)
+- Two submit methods:
+  - `submit(callback)` - no JS payload
+  - `submit_with_payload(callback, js_payload)` - with JS payload
+- Tasks are sent even if worker is still Initializing (browser queues them)
+- No failure handling for simplicity
+
+File: `simple_thread_pool.rs`
+
