@@ -1,14 +1,38 @@
 //! Web Worker Manager for managing web workers and message passing.
 //!
-//! This module provides a centralized manager for web workers that:
-//! - Manages spawning of web workers
-//! - Handles message passing between main thread and workers
-//! - Tracks worker status
-//! - Supports custom messages with JS payloads and Rust callbacks
-//! - Support dynamic linking and hotswap (not yet implemented)
+//! ## Background: Web Multi-threading Limitations
 //!
-//! Note: the web workers managed by it should not be touched by raw JS API.
-//! Don't directly send JS message or change their JS callback.
+//! In-browser WASM multi-threading has restrictions:
+//!
+//! - Different web workers must use separately-created
+//!   `WebAssembly.Instance`. They can only share `WebAssembly.Memory`, not
+//!   tables or globals.
+//! - Objects like `OffscreenCanvas` and `WebAssembly.Module`
+//!   can only be sent via JS `postMessage`, not through `SharedArrayBuffer`.
+//! - Web workers cannot receive new JS messages without finishing current JS event processing.
+//!   If it keeps running a scheduler loop it cannot receive JS messages.
+//! - There is no Web API for getting a list of all
+//!   web workers.
+//! - Also wasm-bindgen JS proxy types (e.g., `JsValue`)
+//!   only hold an index into a JS-side array. The actual JS value cannot cross
+//!   thread boundaries via shared memory - it must be sent via `postMessage`.
+//!   Related: <https://wasm-bindgen.github.io/wasm-bindgen/contributing/design/js-objects-in-rust.html>
+//!
+//! ## Why Web Worker Manager?
+//!
+//! This module provides a centralized manager to work around these limitations:
+//!
+//! - Manage worker references and status from main thread,
+//!   since there's no built-in way to enumerate workers.
+//! - Handle WASM module/memory transfer and worker
+//!   initialization sequence.
+//! - Provide a consistent way to send Rust closures
+//!   combined with JS values between threads.
+//! - For dynamic linking (not yet implemented), workers must cooperatively load new WASM modules
+//!   and update their own WASM tables.
+//!
+//! **Important**: Web workers managed by this module must not be touched by raw
+//! JS APIs. Don't directly send messages or change their `onmessage` callback.
 //!
 //! ## Message Protocol
 //!
