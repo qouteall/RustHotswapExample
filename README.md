@@ -23,7 +23,7 @@ Command:
 dx serve --hot-patch --package wasm_hotswap_example --target wasm32-unknown-unknown --bundle web
 ```
 
-On Windows, it currently cannot build due to a bug in Dioxus CLI. Fixed in [this PR](https://github.com/DioxusLabs/dioxus/pull/5010) (not yet merged).
+On Windows, it currently cannot build due to a bug in Dioxus CLI. Fixed in [this PR](https://github.com/DioxusLabs/dioxus/pull/5010). That PR is merged but now (2025 Dec 20th) not yet included in latest release.
 
 The `index.html` will be used by Dioxus CLI for serving web page.
 
@@ -79,6 +79,6 @@ dx serve --hot-patch --target wasm32-unknown-unknown --bundle web "--cargo-args=
 
 ---
 
-Side note: the "hotswap", "hot reload" and "hotpatch" mostly refer to the same thing. But sometimes "hot reload" refers to reloding code and losing execution state. The "hotswap" here means applying code change while keeping executing state.
+Side note: the "hotswap", "hot reload" and "hotpatch" mostly refer to the same thing. But sometimes "hot reload" refers to reloading code and losing execution state. The "hotswap" here means applying code change while keeping executing state.
 
 
