@@ -71,7 +71,8 @@
 //! after invocation.
 
 use std::cell::{Cell, RefCell};
-
+use std::sync::Mutex;
+use std::thread;
 use js_sys::{Array, Object, Reflect};
 use wasm_bindgen::prelude::*;
 use web_sys::{

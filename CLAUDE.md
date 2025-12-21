@@ -37,6 +37,10 @@ Note that wasm-bindgen has functionality of using Rust type to hold JS value (`J
 
 https://wasm-bindgen.github.io/wasm-bindgen/contributing/design/js-objects-in-rust.html
 
+### IDE and toolchain notes
+
+The `wasm_mt_hotswap_example` subfolder uses a different nightly toolchain with atomics enabled (`+atomics,+bulk-memory,+mutable-globals`). 
+
 ### Important instructions
 
 Always ask me clarifying questions before changing code.
