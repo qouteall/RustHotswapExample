@@ -29,133 +29,14 @@ Don't care about `pool.rs` or copy its design. I am going to rework `pool.rs`.
 
 It's not yet working. It's being worked on.
 
-#### Web multi-threading constraints
+Web worker manager: `wasm_mt_hotswap_example/web_worker_manager.rs`
 
-In-browser WASM multi-threading has restrictions:
-
-- Different web workers must use separately-created `WebAssembly.Instance` (can only share memory, not tables/globals)
-- Objects like `OffscreenCanvas` and `WebAssembly.Module` can only be sent via JS message, not SharedArrayBuffer
-- Web workers cannot receive messages while running WASM event loops
-- There is no Web API for getting a list of all web workers
-
-#### Purpose of web worker manager
-
-Web worker manager aims to workaround previous constraints.
-
-- Manage web workers and track their JS references in main thread.
-- Take control over web worker initialization, message passing, message processing.
-- Allow dynamic linking. Due to the previous constraints, to do dynamic linking, each web worker need to cooperatively load new wasm module and change their own table. And that can only be done if web worker finishes processing current message (cannot stuck in scheduler loop).
-- Make it easier to send a Rust closure combined with JS value to any thread.
-- Support worker-to-worker direct communication via MessageChannel.
-
-#### Thread IDs
-
-- `ThreadId(0)` = main thread
-- `ThreadId(1..=n)` = worker threads
-
-The type is `ThreadId` (not `WorkerId`). All threads know their own ID via `my_thread_id()`.
-
-#### Initialization
-
-The web worker manager uses fixed worker count at initialization:
-
-```
-init_web_worker_manager(worker_count, on_init_callback)?;
-```
-
-During init:
-1. Creates all workers upfront
-2. Creates n² MessageChannels for worker-to-worker communication
-3. Sends init message to each worker with WASM module, memory, and MessagePorts
-
-#### Message protocol
-
-The web worker manager takes over JS message passing between all threads.
-
-**Init message (main → worker):**
-```
-{
-  __wwm_wasm_module: WebAssembly.Module,
-  __wwm_wasm_memory: WebAssembly.Memory,
-  __wwm_callback: [dataPtr, vTablePtr],  // fat pointer for Box<dyn FnOnce(ThreadId, JsValue) + Send>
-  __wwm_js_payload: any,                 // user-defined payload
-  __wwm_thread_id: number,               // this worker's ThreadId (1..=n)
-  __wwm_sender_id: number,               // sender's ThreadId (always 0 for init)
-  __wwm_ports: [MessagePort | null, ...],  // bidirectional ports to other workers
-  __wwm_thread_count: number             // total number of threads (worker_count + 1)
-}
-```
-
-Port array is indexed by ThreadId (index 0 = main thread, 1..=n = workers):
-- `ports[tid]` is the bidirectional port to communicate with `ThreadId(tid)`
-- Each `MessageChannel` is shared between two workers (smaller tid gets port1, larger gets port2)
-- `ports[0]` is always `null` (main thread uses postMessage, not MessageChannel)
-- `ports[my_tid]` is `null` (no port to self)
-
-**Task message (any direction - main↔worker or worker↔worker):**
-```
-{
-  __wwm_callback: [dataPtr, vTablePtr],  // fat pointer for Box<dyn FnOnce(ThreadId, JsValue) + Send>
-  __wwm_js_payload: any,                 // user-defined payload
-  __wwm_sender_id: number                // sender's ThreadId
-}
-```
-
-The callback fat pointer is heap-allocated by the sender and dropped by the receiver after invocation.
-
-#### Unified send API
-
-```rust
-send_to_thread(
-    target: ThreadId,
-    callback: Box<dyn FnOnce(ThreadId, JsValue) + Send>,
-    js_payload: &JsValue,
-    transfer: Option<&Array>,  // for transferable objects like OffscreenCanvas, ArrayBuffer
-)
-```
-
-Routing:
-- To main thread (ThreadId(0)): uses `self.postMessage()` from worker
-- From main thread to worker: uses `Worker.postMessage()`
-- From worker to worker: uses MessageChannel
-
-#### Worker-to-worker communication
-
-Each worker receives MessagePort arrays during init:
-- `outbound_ports`: ports to send to other workers
-- `inbound_ports`: ports to receive from other workers
-
-This enables direct worker-to-worker messaging without going through main thread.
-
-#### Web worker tracking
-
-Main thread tracks worker status:
-- Initializing: Spawned but init callback hasn't completed yet
-- Normal: Init callback completed
-- DynamicLinking: (reserved for future)
-- Finalizing: (reserved for future)
-
-#### Thread-local storage
-
-Main thread stores:
-- Worker handles and status in `MAIN_THREAD_STATE`
-
-Workers store:
-- Own ThreadId in `MY_THREAD_ID`
-- Outbound MessagePorts in `WORKER_THREAD_STATE`
-
-#### JS worker.js protocol
-
-In web worker JS code, it has a `wasmInit` global (nullable Promise):
-- If null: expects init message only
-- If not null: expects task message only
-- Task message processing awaits the init promise
-
-User code cannot change `onmessage` using raw web API or send messages using raw web API.
-
-#### Important things
+### Things to notice
 
 Note that wasm-bindgen has functionality of using Rust type to hold JS value (`JsValue`). These JS proxy types only hold an integer. The actual JS value is in a JS array managed by wasm-bindgen. The Rust values can be sent across threads but JS values cannot. This is an important distinction. The `JsValue` type is neither `Send` or `Sync`. JS value has to be sent via web worker message.
 
 https://wasm-bindgen.github.io/wasm-bindgen/contributing/design/js-objects-in-rust.html
 
+### Important instructions
+
+Always ask me clarifying questions before changing code.

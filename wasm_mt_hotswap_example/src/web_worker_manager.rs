@@ -340,38 +340,27 @@ pub fn init_web_worker_manager(
 ) -> Result<(), JsValue> {
     assert_main_thread();
 
-    // Check not already initialized
     MAIN_THREAD_STATE.with(|state| {
         if state.borrow().is_some() {
             panic!("WebWorkerManager already initialized");
         }
     });
 
-    // Terminology:
-    // - worker_count: number of web workers (excluding main thread)
-    // - thread_count: total threads = worker_count + 1 (including main thread)
-    // - worker_idx: 0-based index for workers (0..worker_count)
-    // - thread_id: ThreadId value (0 = main, 1..=worker_count = workers)
-    //   thread_id = worker_idx + 1
-
-    // Set main thread's ID
     MY_THREAD_ID.with(|id| id.set(Some(ThreadId::MAIN)));
 
     let thread_count = worker_count + 1;
 
-    // Initialize global worker status array (indexed by thread_id, so size = thread_count)
     init_worker_status_array(thread_count);
 
-    // Create MessageChannels for worker-to-worker communication.
-    // Each MessageChannel is bidirectional, so we only need n*(n-1)/2 channels.
-    // channels[i][j] where i < j stores the channel for workers i and j.
-    // Worker with smaller thread_id gets port1, larger gets port2.
+    // Create MessageChannels that allow each web worker to send message to any web worker.
+    // ports[i][j] stores the port for worker i to send to j (i != j).
     // Index 0 row/col unused (main thread doesn't use MessageChannel).
-    let mut channels: Vec<Vec<Option<MessageChannel>>> = vec![vec![None; thread_count]; thread_count];
+    let mut ports: Vec<Vec<Option<MessagePort>>> = vec![vec![None; thread_count]; thread_count];
     for i in 1..thread_count {
         for j in (i + 1)..thread_count {
-            // Create one channel for each pair (i, j) where i < j
-            channels[i][j] = Some(MessageChannel::new()?);
+            let channel = MessageChannel::new()?;
+            ports[i][j] = Some(channel.port1());
+            ports[j][i] = Some(channel.port2());
         }
     }
 
@@ -397,33 +386,22 @@ pub fn init_web_worker_manager(
         worker.set_onmessage(Some(onmessage_closure.as_ref().unchecked_ref()));
 
         // Collect MessagePorts for this worker.
-        // ports[tid] = port to communicate with ThreadId(tid)
-        // - ports[0] = null (main thread uses postMessage, not MessageChannel)
-        // - ports[my_tid] = null (no port to self)
-        // - For pair (my_tid, other_tid): smaller tid gets port1, larger gets port2
-        let ports = Array::new();
+        // worker_ports[tid] = port to communicate with ThreadId(tid)
+        // - worker_ports[0] = null (main thread uses postMessage, not MessageChannel)
+        // - worker_ports[my_tid] = null (no port to self)
+        let worker_ports = Array::new();
 
         // Index 0 = main thread (no MessageChannel port)
-        ports.push(&JsValue::NULL);
+        worker_ports.push(&JsValue::NULL);
 
         // Index 1..thread_count = worker threads
         for other_tid in 1..thread_count {
             if other_tid == my_tid {
-                ports.push(&JsValue::NULL); // No port to self
-            } else if my_tid < other_tid {
-                // I'm the smaller tid, I get port1
-                if let Some(ref channel) = channels[my_tid][other_tid] {
-                    ports.push(&channel.port1());
-                } else {
-                    ports.push(&JsValue::NULL);
-                }
+                worker_ports.push(&JsValue::NULL); // No port to self
+            } else if let Some(ref port) = ports[my_tid][other_tid] {
+                worker_ports.push(port);
             } else {
-                // I'm the larger tid, I get port2
-                if let Some(ref channel) = channels[other_tid][my_tid] {
-                    ports.push(&channel.port2());
-                } else {
-                    ports.push(&JsValue::NULL);
-                }
+                worker_ports.push(&JsValue::NULL);
             }
         }
 
@@ -455,21 +433,15 @@ pub fn init_web_worker_manager(
         Reflect::set(&msg, &"__wwm_thread_id".into(), &JsValue::from_f64(thread_id.0 as f64))?;
         Reflect::set(&msg, &"__wwm_sender_id".into(), &JsValue::from_f64(ThreadId::MAIN.0 as f64))?;
         // MessageChannel ports (indexed by thread_id)
-        Reflect::set(&msg, &"__wwm_ports".into(), &ports)?;
+        Reflect::set(&msg, &"__wwm_ports".into(), &worker_ports)?;
         Reflect::set(&msg, &"__wwm_thread_count".into(), &JsValue::from_f64(thread_count as f64))?;
 
         // Transfer the MessagePorts
         let transfer = Array::new();
         for other_tid in 1..thread_count {
             if other_tid != my_tid {
-                if my_tid < other_tid {
-                    if let Some(ref channel) = channels[my_tid][other_tid] {
-                        transfer.push(&channel.port1());
-                    }
-                } else {
-                    if let Some(ref channel) = channels[other_tid][my_tid] {
-                        transfer.push(&channel.port2());
-                    }
+                if let Some(ref port) = ports[my_tid][other_tid] {
+                    transfer.push(port);
                 }
             }
         }
