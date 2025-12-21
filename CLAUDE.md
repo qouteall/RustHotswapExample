@@ -40,3 +40,5 @@ https://wasm-bindgen.github.io/wasm-bindgen/contributing/design/js-objects-in-ru
 ### Important instructions
 
 Always ask me clarifying questions before changing code.
+
+When making code changes, prioritize simplicity and maintainability over minimal diffs. Consolidate similar logic, reduce duplication, and restructure when it improves clarity.

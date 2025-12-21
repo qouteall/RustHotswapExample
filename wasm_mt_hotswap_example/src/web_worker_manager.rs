@@ -579,16 +579,20 @@ pub fn send_to_thread(
 ) -> Result<(), JsValue> {
     let my_id = my_thread_id();
 
-    if my_id.is_main() && target.is_main() {
-        // Main thread sending to itself - use queueMicrotask
-        // Note: transfer is ignored for main-to-main (no actual message passing)
+    if my_id == target {
+        // Thread sending to itself. Use queueMicrotask
         let js_payload_clone = js_payload.clone();
         let closure = Closure::once(move || {
-            callback(ThreadId::MAIN, js_payload_clone);
+            callback(my_id, js_payload_clone);
         });
 
-        let window = web_sys::window().expect("no window");
-        window.queue_microtask(closure.as_ref().unchecked_ref());
+        if my_id.is_main() {
+            let window = web_sys::window().expect("no window");
+            window.queue_microtask(closure.as_ref().unchecked_ref());
+        } else {
+            let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
+            global.queue_microtask(closure.as_ref().unchecked_ref());
+        }
         closure.forget(); // TODO check whether it leaks memory
         return Ok(());
     }
