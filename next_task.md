@@ -10,11 +10,15 @@ The requirement is that it can handle tasks with JS payloads. But not all messag
 
 Due to that requirement, it's not trivial. It's different to native thread pool.
 
-It handles pure-Rust tasks via a scheduler loop. Each thread has a fixed-sized ring buffer queue. The thread pool has a shared deque that's protected by lock.
+It handles pure-Rust tasks via a scheduler loop. Each thread has a fixed-sized ring buffer queue. The thread pool has a shared deque that's protected by lock (plan to make it lock-free). The tasks that are submitted in thread in pool goes into current thread's ring buffer. If ring buffer is full it goes into shared deque. The tasks sent by other threads directly go to shared deque.
 
-Each thread also has a global atomic flag that tells whether it should exit scheduler loop to handle JS web worker messages. (JS message cannot be handled without exiting current message handling) During the JS web worker message handling, once it finishes that task, it go into scheduler loop again.
+The in-memory queue only holds pure-Rust messages. The JS messages are sent via web worker message. The two are separate.
 
-The scheduler loop sleeps using WASM mechanism.
+Each thread also has a global atomic flag that tells whether it should exit scheduler loop to handle JS web worker messages. (JS message cannot be handled without exiting current message handling) During the JS web worker message handling, once it finishes that task, it goes into scheduler loop again.
+
+The scheduler loop sleeps using WASM mechanism. (TODO how exactly? std::thread::park?)
+
+No need to consider async for now. Make it normal thread pool that runs blocking tasks.
 
 By utilizing web worker manager, that thread pool should be able to be implemented by Rust without changing JS.
 
