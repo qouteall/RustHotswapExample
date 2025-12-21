@@ -14,7 +14,7 @@ It handles pure-Rust tasks via a scheduler loop. Each thread has a fixed-sized r
 
 The in-memory queue only holds pure-Rust messages. The JS messages are sent via web worker message. The two are separate.
 
-Each thread also has a global atomic flag that tells whether it should exit scheduler loop to handle JS web worker messages. (JS message cannot be handled without exiting current message handling) During the JS web worker message handling, once it finishes that task, it goes into scheduler loop again.
+Each thread also has a global atomic flag that tells whether it should exit scheduler loop to handle JS web worker messages. (JS message cannot be handled without exiting current message handling) During the JS web worker message handling, once it finishes that task, it goes into scheduler loop again. JS tasks have higher priority so that scheduler loop exits when there are still remaining Rust task.
 
 The scheduler loop sleeps using WASM mechanism. (TODO how exactly? std::thread::park?)
 
