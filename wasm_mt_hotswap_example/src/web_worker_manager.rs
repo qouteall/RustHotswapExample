@@ -582,22 +582,21 @@ pub fn send_to_thread(
     if my_id == target {
         // Thread sending to itself. Use queueMicrotask
         let js_payload_clone = js_payload.clone();
-        let closure = Closure::once(move || {
+        let closure = Closure::once_into_js(move || {
             callback(my_id, js_payload_clone);
         });
 
         if my_id.is_main() {
             let window = web_sys::window().expect("no window");
-            window.queue_microtask(closure.as_ref().unchecked_ref());
+            window.queue_microtask(closure.unchecked_ref());
         } else {
             let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
-            global.queue_microtask(closure.as_ref().unchecked_ref());
+            global.queue_microtask(closure.unchecked_ref());
         }
-        closure.forget(); // TODO check whether it leaks memory
         return Ok(());
     }
 
-    // Create message
+    // Create JS message
     let (data_ptr, vtable_ptr) = decompose_box(callback);
     let msg = Object::new();
     Reflect::set(
