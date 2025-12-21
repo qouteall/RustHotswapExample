@@ -15,20 +15,15 @@
 //!   If it keeps running a scheduler loop it cannot receive JS messages.
 //! - There is no Web API for getting a list of all
 //!   web workers.
-//! - Also wasm-bindgen JS proxy types (e.g., `JsValue`)
-//!   only hold an index into a JS-side array. The actual JS value cannot cross
-//!   thread boundaries via shared memory - it must be sent via `postMessage`.
-//!   Related: <https://wasm-bindgen.github.io/wasm-bindgen/contributing/design/js-objects-in-rust.html>
 //!
 //! ## Why Web Worker Manager?
 //!
 //! This module provides a centralized manager to work around these limitations:
 //!
-//! - Manage worker references and status from main thread,
-//!   since there's no built-in way to enumerate workers.
-//! - Handle WASM module/memory transfer and worker
-//!   initialization sequence.
-//! - Provide a consistent way to send Rust closures
+//! - Allocate fixed amount of web workers at initialization,
+//! - Handle WASM module/memory transfer and worker initialization.
+//! - Allow each threads to send message to each other. Workers use `MessageChannel` to communicate with each other.
+//! - Provide an easy way to send Rust closures
 //!   combined with JS values between threads.
 //! - For dynamic linking (not yet implemented), workers must cooperatively load new WASM modules
 //!   and update their own WASM tables.
