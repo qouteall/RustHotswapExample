@@ -6,6 +6,7 @@
 //! web workers which can be used to execute `rayon`-style work.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, WorkerOptions};
@@ -17,7 +18,8 @@ pub struct WorkerPool {
 }
 
 struct PoolState {
-    workers: RefCell<Vec<Worker>>,
+    pub(crate) workers: RefCell<Vec<Worker>>,
+    pub(crate) queue: RefCell<VecDeque<Box<Work>>>,
     callback: Closure<dyn FnMut(Event)>,
 }
 
@@ -46,6 +48,7 @@ impl WorkerPool {
                     console_log!("unhandled event 2: {}", event.type_());
                     crate::logv(&event);
                 }),
+                queue: RefCell::new(VecDeque::new())
             }),
         };
         for _ in 0..initial {
@@ -87,6 +90,8 @@ impl WorkerPool {
         array.push(&wasm_bindgen::memory());
         worker.post_message(&array)?;
 
+        self.set_worker_callback_of_reclaim(worker.clone());
+
         Ok(worker)
     }
 
@@ -100,10 +105,10 @@ impl WorkerPool {
     ///
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
-    fn worker(&self) -> Result<Worker, JsValue> {
+    fn try_get_free_worker(&self) -> Option<Worker> {
         match self.state.workers.borrow_mut().pop() {
-            Some(worker) => Ok(worker),
-            None => self.spawn(),
+            Some(worker) => Some(worker),
+            None => None
         }
     }
 
@@ -119,17 +124,31 @@ impl WorkerPool {
     ///
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
-    fn execute(&self, f: impl FnOnce() + Send + 'static) -> Result<Worker, JsValue> {
-        let worker = self.worker()?;
+    fn execute(&self, f: impl FnOnce() + Send + 'static) -> Result<(), JsValue> {
         let work = Box::new(Work { func: Box::new(f) });
+
+        let worker_opt = self.try_get_free_worker();
+
+        if let Some(worker) = worker_opt {
+            return self.send_task_to_worker(work, worker);
+        } else {
+            self.state.queue.borrow_mut().push_back(work);
+        }
+
+        return Ok(());
+    }
+
+    fn send_task_to_worker(&self, work: Box<Work>, worker: Worker) -> Result<(), JsValue> {
         let ptr = Box::into_raw(work);
         match worker.post_message(&JsValue::from(ptr as u32)) {
-            Ok(()) => Ok(worker),
+            Ok(()) => {
+                Ok(())
+            },
             Err(e) => {
                 unsafe {
                     drop(Box::from_raw(ptr));
                 }
-                Err(e)
+                return Err(e)
             }
         }
     }
@@ -143,7 +162,7 @@ impl WorkerPool {
     /// whatn it's done the worker is ready to execute more work. This method is
     /// used for all spawned workers to ensure that when the work is finished
     /// the worker is reclaimed back into this pool.
-    fn reclaim_on_message(&self, worker: Worker) {
+    fn set_worker_callback_of_reclaim(&self, worker: Worker) {
         let state = Rc::downgrade(&self.state);
         let worker2 = worker.clone();
         let reclaim_slot = Rc::new(RefCell::new(None));
@@ -161,6 +180,7 @@ impl WorkerPool {
             if let Some(_msg) = event.dyn_ref::<MessageEvent>() {
                 if let Some(state) = state.upgrade() {
                     state.push(worker2.clone());
+                    WorkerPool::flush_pending_tasks(&state);
                 }
                 *slot2.borrow_mut() = None;
                 return;
@@ -172,6 +192,15 @@ impl WorkerPool {
         });
         worker.set_onmessage(Some(reclaim.as_ref().unchecked_ref()));
         *reclaim_slot.borrow_mut() = Some(reclaim);
+    }
+
+    fn flush_pending_tasks(pool_state: &PoolState) {
+        let mut deque = pool_state.queue.borrow_mut();
+        let mut workers = pool_state.workers.borrow_mut();
+        if !deque.is_empty() && !workers.is_empty() {
+            let work = deque.pop_front().unwrap();
+
+        }
     }
 }
 
@@ -192,7 +221,7 @@ impl WorkerPool {
     /// a web worker, that error is returned.
     pub fn run(&self, f: impl FnOnce() + Send + 'static) -> Result<(), JsValue> {
         let worker = self.execute(f)?;
-        self.reclaim_on_message(worker);
+
         Ok(())
     }
 }
