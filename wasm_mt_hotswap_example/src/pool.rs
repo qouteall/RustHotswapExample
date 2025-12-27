@@ -103,7 +103,9 @@ impl WorkerPool {
     fn worker(&self) -> Result<Worker, JsValue> {
         match self.state.workers.borrow_mut().pop() {
             Some(worker) => Ok(worker),
-            None => self.spawn(),
+            None => {
+                panic!("Currrently creating new worker is not allowed")
+            },
         }
     }
 
@@ -149,6 +151,9 @@ impl WorkerPool {
         let reclaim_slot = Rc::new(RefCell::new(None));
         let slot2 = reclaim_slot.clone();
         let reclaim = Closure::<dyn FnMut(_)>::new(move |event: Event| {
+            console_log!(
+                "In reclaim callback"
+            );
             if let Some(error) = event.dyn_ref::<ErrorEvent>() {
                 console_log!("error in worker: {}", error.message());
                 // TODO: this probably leaks memory somehow? It's sort of
