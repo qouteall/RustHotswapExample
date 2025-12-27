@@ -82,6 +82,8 @@ impl Scene {
             .num_threads(concurrency)
             .spawn_handler(|thread| {
                 pool.run(|| thread.run()).unwrap();
+                // Update: seems that it must spawn new threads, cannot queue task
+                // otherwise parallelism is not enough, rayon will stuck inside
                 Ok(())
             })
             .build()
