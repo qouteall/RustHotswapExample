@@ -24,6 +24,6 @@ self.onmessage = event => {
   self.onmessage = async event => {
     // This will queue further commands up until the module is fully initialised:
     await initialised;
-    child_entry_point(event.data);
+    child_entry_point(event.data.ptr, event.data.jsPayload);
   };
 };

@@ -5,6 +5,7 @@
 //! A small module that's intended to provide an example of creating a pool of
 //! web workers which can be used to execute `rayon`-style work.
 
+use js_sys::{Object, Reflect};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -22,7 +23,7 @@ struct PoolState {
 }
 
 struct Work {
-    func: Box<dyn FnOnce() + Send>,
+    func: Box<dyn FnOnce(JsValue) + Send>,
 }
 
 #[wasm_bindgen]
@@ -32,11 +33,6 @@ impl WorkerPool {
     /// The pool created here can be used over a long period of time, and it
     /// will be initially primed with `initial` workers. Currently workers are
     /// never released or gc'd until the whole pool is destroyed.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error that may happen while a JS web worker is created and a
-    /// message is sent to it.
     #[wasm_bindgen(constructor)]
     pub fn new(initial: usize) -> Result<WorkerPool, JsValue> {
         let pool = WorkerPool {
@@ -60,11 +56,6 @@ impl WorkerPool {
     ///
     /// The worker isn't registered with this `WorkerPool` but is capable of
     /// executing work for this Wasm module.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error that may happen while a JS web worker is created and a
-    /// message is sent to it.
     fn spawn(&self) -> Result<Worker, JsValue> {
         console_log!("spawning new worker");
         // TODO: what to do about `./worker.js`:
@@ -87,6 +78,8 @@ impl WorkerPool {
         array.push(&wasm_bindgen::memory());
         worker.post_message(&array)?;
 
+        self.set_reclaim_callback(worker.clone());
+
         Ok(worker)
     }
 
@@ -95,17 +88,12 @@ impl WorkerPool {
     /// This will attempt to pull an already-spawned web worker from our cache
     /// if one is available, otherwise it will spawn a new worker and return the
     /// newly spawned worker.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error that may happen while a JS web worker is created and a
-    /// message is sent to it.
-    fn worker(&self) -> Result<Worker, JsValue> {
+    fn obtain_worker(&self) -> Result<Worker, JsValue> {
         match self.state.workers.borrow_mut().pop() {
             Some(worker) => Ok(worker),
             None => {
                 panic!("Currrently creating new worker is not allowed")
-            },
+            }
         }
     }
 
@@ -121,11 +109,20 @@ impl WorkerPool {
     ///
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
-    fn execute(&self, f: impl FnOnce() + Send + 'static) -> Result<Worker, JsValue> {
-        let worker = self.worker()?;
+    fn execute(
+        &self,
+        f: impl FnOnce(JsValue) + Send + 'static,
+        js_payload: JsValue,
+    ) -> Result<Worker, JsValue> {
+        let worker = self.obtain_worker()?;
         let work = Box::new(Work { func: Box::new(f) });
         let ptr = Box::into_raw(work);
-        match worker.post_message(&JsValue::from(ptr as u32)) {
+
+        let to_send = Object::new();
+        Reflect::set(&to_send, &"ptr".into(), &JsValue::from(ptr as u32));
+        Reflect::set(&to_send, &"jsPayload".into(), &js_payload);
+
+        match worker.post_message(&to_send) {
             Ok(()) => Ok(worker),
             Err(e) => {
                 unsafe {
@@ -145,15 +142,13 @@ impl WorkerPool {
     /// whatn it's done the worker is ready to execute more work. This method is
     /// used for all spawned workers to ensure that when the work is finished
     /// the worker is reclaimed back into this pool.
-    fn reclaim_on_message(&self, worker: Worker) {
+    fn set_reclaim_callback(&self, worker: Worker) {
         let state = Rc::downgrade(&self.state);
         let worker2 = worker.clone();
         let reclaim_slot = Rc::new(RefCell::new(None));
         let slot2 = reclaim_slot.clone();
         let reclaim = Closure::<dyn FnMut(_)>::new(move |event: Event| {
-            console_log!(
-                "In reclaim callback"
-            );
+            console_log!("In reclaim callback");
             if let Some(error) = event.dyn_ref::<ErrorEvent>() {
                 console_log!("error in worker: {}", error.message());
                 // TODO: this probably leaks memory somehow? It's sort of
@@ -186,18 +181,17 @@ impl WorkerPool {
     /// This pool manages a set of web workers to draw from, and `f` will be
     /// spawned quickly into one if the worker is idle. If no idle workers are
     /// available then a new web worker will be spawned.
-    ///
-    /// Once `f` returns the worker assigned to `f` is automatically reclaimed
-    /// by this `WorkerPool`. This method provides no method of learning when
-    /// `f` completes, and for that you'll need to use `run_notify`.
-    ///
-    /// # Errors
-    ///
-    /// If an error happens while spawning a web worker or sending a message to
-    /// a web worker, that error is returned.
     pub fn run(&self, f: impl FnOnce() + Send + 'static) -> Result<(), JsValue> {
-        let worker = self.execute(f)?;
-        self.reclaim_on_message(worker);
+        self.execute(|_js_payoad| f(), JsValue::undefined())?;
+        Ok(())
+    }
+
+    pub fn run_with_js_payload(
+        &self,
+        f: impl FnOnce(JsValue) + Send + 'static,
+        js_payload: JsValue,
+    ) -> Result<(), JsValue> {
+        self.execute(f, js_payload)?;
         Ok(())
     }
 }
@@ -216,13 +210,12 @@ impl PoolState {
     }
 }
 
-/// Entry point invoked by `worker.js`, a bit of a hack but see the "TODO" above
-/// about `worker.js` in general.
+/// Entry point invoked by `worker.js`
 #[wasm_bindgen]
-pub fn child_entry_point(ptr: u32) -> Result<(), JsValue> {
+pub fn child_entry_point(ptr: u32, js_payload: JsValue) -> Result<(), JsValue> {
     let ptr = unsafe { Box::from_raw(ptr as *mut Work) };
     let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
-    (ptr.func)();
+    (ptr.func)(js_payload);
     global.post_message(&JsValue::undefined())?;
     Ok(())
 }
