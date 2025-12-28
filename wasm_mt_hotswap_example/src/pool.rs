@@ -19,7 +19,6 @@ pub struct WorkerPool {
 
 struct PoolState {
     workers: RefCell<Vec<Worker>>,
-    callback: Closure<dyn FnMut(Event)>,
 }
 
 struct Work {
@@ -38,15 +37,11 @@ impl WorkerPool {
         let pool = WorkerPool {
             state: Rc::new(PoolState {
                 workers: RefCell::new(Vec::with_capacity(initial)),
-                callback: Closure::new(|event: Event| {
-                    console_log!("unhandled event 2: {}", event.type_());
-                    crate::logv(&event);
-                }),
             }),
         };
         for _ in 0..initial {
             let worker = pool.spawn()?;
-            pool.state.push(worker);
+            pool.set_reclaim_callback(worker);
         }
 
         Ok(pool)
@@ -81,11 +76,10 @@ impl WorkerPool {
         Ok(worker)
     }
 
-    /// Fetches a worker from this pool, spawning one if necessary.
+    /// Fetches a worker from this pool.
     ///
     /// This will attempt to pull an already-spawned web worker from our cache
-    /// if one is available, otherwise it will spawn a new worker and return the
-    /// newly spawned worker.
+    /// if one is available, otherwise it will panic.
     fn obtain_worker(&self) -> Result<Worker, JsValue> {
         match self.state.workers.borrow_mut().pop() {
             Some(worker) => Ok(worker),
@@ -95,18 +89,16 @@ impl WorkerPool {
         }
     }
 
-    /// Executes the work `f` in a web worker, spawning a web worker if
-    /// necessary.
+    /// Executes the work `f` in a web worker.
     ///
     /// This will acquire a web worker and then send the closure `f` to the
     /// worker to execute. The worker won't be usable for anything else while
-    /// `f` is executing, and no callbacks are registered for when the worker
-    /// finishes.
+    /// `f` is executing. When finished, the worker is automatically reclaimed
+    /// back into the pool via the callback set at spawn time.
     ///
     /// # Errors
     ///
-    /// Returns any error that may happen while a JS web worker is created and a
-    /// message is sent to it.
+    /// Returns any error that may happen while a message is sent to the worker.
     fn execute(
         &self,
         f: impl FnOnce(JsValue) + Send + 'static,
@@ -143,33 +135,22 @@ impl WorkerPool {
     fn set_reclaim_callback(&self, worker: Worker) {
         let state = Rc::downgrade(&self.state);
         let worker2 = worker.clone();
-        let reclaim_slot = Rc::new(RefCell::new(None));
-        let slot2 = reclaim_slot.clone();
         let reclaim = Closure::<dyn FnMut(_)>::new(move |event: Event| {
             console_log!("In reclaim callback");
             if let Some(error) = event.dyn_ref::<ErrorEvent>() {
                 console_log!("error in worker: {}", error.message());
-                // TODO: this probably leaks memory somehow? It's sort of
-                // unclear what to do about errors in workers right now.
                 return;
             }
 
-            // If this is a completion event then can deallocate our own
-            // callback by clearing out `slot2` which contains our own closure.
             if let Some(_msg) = event.dyn_ref::<MessageEvent>() {
                 if let Some(state) = state.upgrade() {
                     state.push(worker2.clone());
                 }
-                *slot2.borrow_mut() = None;
-                return;
             }
-
-            console_log!("unhandled event 1: {}", event.type_());
-            crate::logv(&event);
-            // TODO: like above, maybe a memory leak here?
         });
         worker.set_onmessage(Some(reclaim.as_ref().unchecked_ref()));
-        *reclaim_slot.borrow_mut() = Some(reclaim);
+        reclaim.forget(); // Leak intentionally - closure lives as long as worker
+        self.state.push(worker);
     }
 }
 
@@ -177,15 +158,10 @@ impl WorkerPool {
     /// Executes `f` in a web worker.
     ///
     /// This pool manages a set of web workers to draw from, and `f` will be
-    /// spawned quickly into one if the worker is idle. If no idle workers are
-    /// available then a new web worker will be spawned.
+    /// spawned quickly into one if the worker is idle. Panics if no idle
+    /// workers are available.
     pub fn run(&self, f: impl FnOnce() + Send + 'static) -> Result<(), JsValue> {
-        let worker = self.execute(|_js_payoad| f(), JsValue::undefined())?;
-
-        // maybe I can avoid setting callback every time
-        // doing that require removing clearing callback in `push` also avoid wasm-bindgen clearing it
-        self.set_reclaim_callback(worker.clone());
-
+        self.execute(|_js_payoad| f(), JsValue::undefined())?;
         Ok(())
     }
 
@@ -194,16 +170,13 @@ impl WorkerPool {
         f: impl FnOnce(JsValue) + Send + 'static,
         js_payload: JsValue,
     ) -> Result<(), JsValue> {
-        let worker = self.execute(f, js_payload)?;
-        self.set_reclaim_callback(worker.clone());
+        self.execute(f, js_payload)?;
         Ok(())
     }
 }
 
 impl PoolState {
     fn push(&self, worker: Worker) {
-        worker.set_onmessage(Some(self.callback.as_ref().unchecked_ref()));
-        worker.set_onerror(Some(self.callback.as_ref().unchecked_ref()));
         let mut workers = self.workers.borrow_mut();
         for prev in workers.iter() {
             let prev: &JsValue = prev;
