@@ -78,8 +78,6 @@ impl WorkerPool {
         array.push(&wasm_bindgen::memory());
         worker.post_message(&array)?;
 
-        self.set_reclaim_callback(worker.clone());
-
         Ok(worker)
     }
 
@@ -182,7 +180,12 @@ impl WorkerPool {
     /// spawned quickly into one if the worker is idle. If no idle workers are
     /// available then a new web worker will be spawned.
     pub fn run(&self, f: impl FnOnce() + Send + 'static) -> Result<(), JsValue> {
-        self.execute(|_js_payoad| f(), JsValue::undefined())?;
+        let worker = self.execute(|_js_payoad| f(), JsValue::undefined())?;
+
+        // maybe I can avoid setting callback every time
+        // doing that require removing clearing callback in `push` also avoid wasm-bindgen clearing it
+        self.set_reclaim_callback(worker.clone());
+
         Ok(())
     }
 
@@ -191,7 +194,8 @@ impl WorkerPool {
         f: impl FnOnce(JsValue) + Send + 'static,
         js_payload: JsValue,
     ) -> Result<(), JsValue> {
-        self.execute(f, js_payload)?;
+        let worker = self.execute(f, js_payload)?;
+        self.set_reclaim_callback(worker.clone());
         Ok(())
     }
 }
