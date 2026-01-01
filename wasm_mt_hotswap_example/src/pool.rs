@@ -235,7 +235,6 @@ pub fn child_entry_point(ptr: u32, js_payload: JsValue) -> Result<(), JsValue> {
 }
 
 /// Send a callback from worker to main thread with a JS payload
-#[wasm_bindgen]
 pub fn worker_send_callback(f: Box<dyn FnOnce(JsValue) + Send>, js_payload: JsValue) -> Result<(), JsValue> {
     let global: DedicatedWorkerGlobalScope = js_sys::global()
         .dyn_into()
