@@ -222,9 +222,9 @@ pub fn init_worker_pool(initial: usize) -> Result<(), JsValue> {
     Ok(())
 }
 
-pub fn with_worker_pool<F, R>(f: F) -> Result<R, JsValue>
+pub fn with_worker_pool<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut WorkerPool) -> Result<R, JsValue>,
+    F: FnOnce(&mut WorkerPool) -> R
 {
     WORKER_POOL.with(|p| {
         let mut pool = p.borrow_mut();
@@ -249,6 +249,10 @@ pub fn submit_to_pool_with_js_payload(
         pool.execute(f, js_payload)?;
         Ok(())
     })
+}
+
+pub fn pool_get_web_worker_num() -> usize {
+    with_worker_pool(|pool| pool.get_worker_count())
 }
 
 /// Entry point invoked by `worker.js`

@@ -17,7 +17,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{console, ImageData};
 use web_sys::{MessageEvent, WebSocket};
 
-use crate::pool::submit_to_pool;
+use crate::pool::{pool_get_web_worker_num, submit_to_pool};
 
 fn main() {
     // this is just placeholder
@@ -63,10 +63,7 @@ impl Scene {
     /// This will spawn up to `concurrency` workers which are loaded from or
     /// spawned into `pool`. The `RenderingScene` state contains information to
     /// get notifications when the render has completed.
-    pub fn render(
-        self,
-        concurrency: usize
-    ) -> Result<RenderingScene, JsValue> {
+    pub fn render(self, concurrency: usize) -> Result<RenderingScene, JsValue> {
         let scene = self.inner;
         let height = scene.height;
         let width = scene.width;
@@ -222,7 +219,9 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
             match serde_json::from_str::<DevserverMsg>(string) {
                 Ok(DevserverMsg::HotReload(hr)) => {
                     if let Some(jumptable) = hr.clone().jump_table {
-                        unsafe {wasm_mt_apply_patch(jumptable); }
+                        unsafe {
+                            wasm_mt_apply_patch(jumptable);
+                        }
 
                         on_hotpatch_callback();
                     }
@@ -249,7 +248,7 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
     console::log_1(&"Hotpatch initialized".into());
 }
 
-pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError> {
+pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), PatchError> {
     wasm_bindgen_futures::spawn_local(async move {
         use js_sys::{
             ArrayBuffer, Object, Reflect,
@@ -265,7 +264,7 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
         let exports: Object = wasm_bindgen::exports().unchecked_into();
         let buffer: SharedArrayBuffer = memory.buffer().unchecked_into();
 
-        let path = table.lib.to_str().unwrap();
+        let path = jump_table.lib.to_str().unwrap();
 
         web_sys::console::info_1(&format!("Going to load wasm binary: {:?}", path).into());
 
@@ -312,9 +311,27 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
 
         let table_base = funcs.length();
 
-        for v in table.map.values_mut() {
+        for v in jump_table.map.values_mut() {
             *v += table_base as u64;
         }
+
+        do_per_thread_hotpatch(table_base, &jump_table, &module.unchecked_into::<Module>(), memory_base);
+
+        let web_worker_num = pool_get_web_worker_num();
+        let mut hotpatch_state = HOTPATCH_STATE.try_write().expect("cannot lock");
+        match *hotpatch_state {
+            HotPatchState::Hotpatching(_) => {
+                panic!("New hotpatch while hotpatching")
+            }
+            _ => {}
+        }
+        *hotpatch_state = HotPatchState::Hotpatching(StateWhenHotpatching {
+            jump_table: Some(jump_table),
+            remaining_hotpatch_webworker_num: AtomicU32::new(web_worker_num as u32),
+        });
+
+        // unlock
+        drop(hotpatch_state);
 
         todo!()
     });
@@ -322,7 +339,7 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
     Ok(())
 }
 
-pub async fn init_hotpatch_per_web_worker(
+pub async fn do_per_thread_hotpatch(
     table_base: u32,
     jump_table: &JumpTable,
     wasm_module: &Module,
