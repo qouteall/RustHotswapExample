@@ -51,7 +51,7 @@ impl Scene {
     /// deserialize here into an actual scene.
     #[wasm_bindgen(constructor)]
     pub fn new(object: JsValue) -> Result<Scene, JsValue> {
-        console_error_panic_hook::set_once();
+        
         Ok(Scene {
             inner: serde_wasm_bindgen::from_value(object)
                 .map_err(|e| JsValue::from(e.to_string()))?,
@@ -173,6 +173,8 @@ fn image_data(base: usize, len: usize, width: u32, height: u32) -> ImageData {
 
 #[wasm_bindgen(start)]
 pub fn start() {
+    console_error_panic_hook::set_once();
+
     init_hotpatch(Box::new(|| {
         console::log_1(&"Hotpatched".into());
     }));
@@ -277,7 +279,7 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
         let response: Promise = web_sys::window().unwrap_throw().fetch_with_str(&path);
 
         // Wait for the fetch to complete - we need the wasm module size in bytes to reserve in the memory
-        let response: web_sys::Response = JsFuture::from(response).await.unwrap().unchecked_into();
+        let response: web_sys::Response = JsFuture::from(response).await.unwrap().into();
 
         // If the status is not success, we bail
         if !response.ok() {
@@ -291,7 +293,7 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
         let dl_bytes: ArrayBuffer = JsFuture::from(response.array_buffer().unwrap())
             .await
             .unwrap()
-            .unchecked_into();
+            .into();
 
         // Expand the memory and table size to accommodate the new data and functions
         //
@@ -306,7 +308,7 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
 
         memory.grow((dl_bytes.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32 + 1);
 
-        let module_promise = WebAssembly::compile_streaming(dl_bytes.unchecked_ref());
+        let module_promise = WebAssembly::compile_streaming(dl_bytes.dyn_ref().unwrap());
         let module = JsFuture::from(module_promise).await.unwrap();
 
         let table_base = funcs.length();
@@ -314,6 +316,8 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
         for v in jump_table.map.values_mut() {
             *v += table_base as u64;
         }
+
+
 
         do_per_thread_hotpatch(
             table_base,
