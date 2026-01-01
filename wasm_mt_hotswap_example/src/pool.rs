@@ -230,7 +230,7 @@ where
         let mut pool = p.borrow_mut();
         let pool = pool
             .as_mut()
-            .ok_or_else(|| JsValue::from_str("WorkerPool not initialized"))?;
+            .expect("WorkerPool not initialized");
         f(pool)
     })
 }
