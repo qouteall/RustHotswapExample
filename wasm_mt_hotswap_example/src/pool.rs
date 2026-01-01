@@ -143,9 +143,24 @@ impl WorkerPool {
                 return;
             }
 
-            if let Some(_msg) = event.dyn_ref::<MessageEvent>() {
-                if let Some(state) = state.upgrade() {
-                    state.push(worker2.clone());
+            if let Some(msg) = event.dyn_ref::<MessageEvent>() {
+                let data = msg.data();
+                let msg_type = Reflect::get(&data, &"type".into()).ok();
+                match msg_type.as_ref().and_then(|v| v.as_string()).as_deref() {
+                    Some("done") => {
+                        if let Some(state) = state.upgrade() {
+                            state.push(worker2.clone());
+                        }
+                    }
+                    Some("callback") => {
+                        if let Ok(ptr) = Reflect::get(&data, &"ptr".into()) {
+                            let ptr = ptr.as_f64().unwrap() as u32;
+                            let work = unsafe { Box::from_raw(ptr as *mut Work) };
+                            let js_payload = Reflect::get(&data, &"jsPayload".into()).unwrap_or(JsValue::undefined());
+                            (work.func)(js_payload);
+                        }
+                    }
+                    _ => {}
                 }
             }
         });
@@ -213,6 +228,24 @@ pub fn child_entry_point(ptr: u32, js_payload: JsValue) -> Result<(), JsValue> {
     let ptr = unsafe { Box::from_raw(ptr as *mut Work) };
     let global = js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>();
     (ptr.func)(js_payload);
-    global.post_message(&JsValue::undefined())?;
+    let msg = Object::new();
+    Reflect::set(&msg, &"type".into(), &"done".into())?;
+    global.post_message(&msg)?;
+    Ok(())
+}
+
+/// Send a callback from worker to main thread with a JS payload
+#[wasm_bindgen]
+pub fn worker_send_callback(f: Box<dyn FnOnce(JsValue) + Send>, js_payload: JsValue) -> Result<(), JsValue> {
+    let global: DedicatedWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| JsValue::from_str("worker_send_callback can only be called from a web worker"))?;
+    let work = Box::new(Work { func: f });
+    let ptr = Box::into_raw(work);
+    let msg = Object::new();
+    Reflect::set(&msg, &"type".into(), &"callback".into())?;
+    Reflect::set(&msg, &"ptr".into(), &JsValue::from(ptr as u32))?;
+    Reflect::set(&msg, &"jsPayload".into(), &js_payload)?;
+    global.post_message(&msg)?;
     Ok(())
 }
