@@ -17,7 +17,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{console, ImageData};
 use web_sys::{MessageEvent, WebSocket};
 
-use crate::pool::{pool_get_web_worker_num, submit_to_pool};
+use crate::pool::{broadcast_to_workers, pool_get_web_worker_num, submit_to_pool};
 
 fn main() {
     // this is just placeholder
@@ -315,7 +315,12 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
             *v += table_base as u64;
         }
 
-        do_per_thread_hotpatch(table_base, &jump_table, &module.unchecked_into::<Module>(), memory_base);
+        do_per_thread_hotpatch(
+            table_base,
+            &jump_table,
+            &module.clone().unchecked_into::<Module>(),
+            memory_base,
+        );
 
         let web_worker_num = pool_get_web_worker_num();
         let mut hotpatch_state = HOTPATCH_STATE.try_write().expect("cannot lock");
@@ -333,7 +338,35 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
         // unlock
         drop(hotpatch_state);
 
-        todo!()
+        broadcast_to_workers(
+            Arc::new(move |js_value| {
+                let module: Module = js_value.into();
+                let hotpatch_state = HOTPATCH_STATE.read().expect("cannot read lock");
+                let is_all_done = match *hotpatch_state {
+                    HotPatchState::Hotpatching(ref state_when_hotpatching) => {
+                        do_per_thread_hotpatch(
+                            table_base,
+                            &state_when_hotpatching.jump_table.as_ref().unwrap(),
+                            &module,
+                            memory_base,
+                        );
+                        let original = state_when_hotpatching
+                            .remaining_hotpatch_webworker_num
+                            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        original == 1
+                    }
+                    HotPatchState::HaventHotpatched => panic!("wrong state HaventHotpatched"),
+                    HotPatchState::Hotpatched => panic!("wrong state Hotpatched"),
+                };
+                // unlock
+                drop(hotpatch_state);
+
+                if is_all_done {
+                    finalize_hotpatch_after_all_web_workers_loaded_patch();
+                }
+            }),
+            module,
+        );
     });
 
     Ok(())
@@ -427,6 +460,8 @@ pub async fn do_per_thread_hotpatch(
 }
 
 pub fn finalize_hotpatch_after_all_web_workers_loaded_patch() {
+    console_log!("Going to finalize hotpatch");
+
     // must release read lock before
     let mut hotpatch_state = HOTPATCH_STATE.try_write().expect("cannot lock");
 

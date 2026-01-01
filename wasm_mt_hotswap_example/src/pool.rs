@@ -255,6 +255,15 @@ pub fn pool_get_web_worker_num() -> usize {
     with_worker_pool(|pool| pool.get_worker_count())
 }
 
+pub fn broadcast_to_workers(
+    f: Arc<dyn Fn(JsValue) + Send + Sync>,
+        js_payload: JsValue,
+) -> Result<(), JsValue> {
+    with_worker_pool(|pool| {
+        pool.broadcast(f, js_payload)
+    })
+}
+
 /// Entry point invoked by `worker.js`
 #[wasm_bindgen]
 pub fn child_entry_point(ptr: u32, js_payload: JsValue) -> Result<(), JsValue> {
