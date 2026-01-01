@@ -308,16 +308,16 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
 
         memory.grow((dl_bytes.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32 + 1);
 
-        let module_promise = WebAssembly::compile_streaming(dl_bytes.dyn_ref().unwrap());
+        let module_promise = WebAssembly::compile(dl_bytes.dyn_ref().expect("casting for compile"));
         let module = JsFuture::from(module_promise).await.unwrap();
 
+
+        
         let table_base = funcs.length();
 
         for v in jump_table.map.values_mut() {
             *v += table_base as u64;
         }
-
-
 
         do_per_thread_hotpatch(
             table_base,

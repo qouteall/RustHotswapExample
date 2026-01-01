@@ -47,3 +47,12 @@ features = [
   "WebSocket",
   "Response"
 ]
+
+
+[profile.release]
+# This keeps debug info even in release builds
+debug = true
+
+[profile.dev]
+# Ensure debug info is enabled for dev builds (usually default)
+debug = true
