@@ -7,38 +7,32 @@
 
 use js_sys::{Object, Reflect};
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, WorkerOptions};
 use web_sys::{ErrorEvent, Event, Worker};
 
-#[wasm_bindgen]
-pub struct WorkerPool {
-    state: Rc<PoolState>,
+thread_local! {
+    static WORKER_POOL: RefCell<Option<WorkerPool>> = RefCell::new(None);
 }
 
-struct PoolState {
-    workers: RefCell<Vec<Worker>>,
+pub struct WorkerPool {
+    workers: Vec<Worker>,
 }
 
 struct Work {
     func: Box<dyn FnOnce(JsValue) + Send>,
 }
 
-#[wasm_bindgen]
 impl WorkerPool {
     /// Creates a new `WorkerPool` which immediately creates `initial` workers.
     ///
     /// The pool created here can be used over a long period of time, and it
     /// will be initially primed with `initial` workers. Currently workers are
     /// never released or gc'd until the whole pool is destroyed.
-    #[wasm_bindgen(constructor)]
-    pub fn new(initial: usize) -> Result<WorkerPool, JsValue> {
-        let pool = WorkerPool {
-            state: Rc::new(PoolState {
-                workers: RefCell::new(Vec::with_capacity(initial)),
-            }),
+    fn new(initial: usize) -> Result<WorkerPool, JsValue> {
+        let mut pool = WorkerPool {
+            workers: Vec::with_capacity(initial),
         };
         for _ in 0..initial {
             let worker = pool.spawn()?;
@@ -81,8 +75,8 @@ impl WorkerPool {
     ///
     /// This will attempt to pull an already-spawned web worker from our cache
     /// if one is available, otherwise it will panic.
-    fn obtain_worker(&self) -> Result<Worker, JsValue> {
-        match self.state.workers.borrow_mut().pop() {
+    fn obtain_worker(&mut self) -> Result<Worker, JsValue> {
+        match self.workers.pop() {
             Some(worker) => Ok(worker),
             None => {
                 panic!("Currrently creating new worker is not allowed")
@@ -101,7 +95,7 @@ impl WorkerPool {
     ///
     /// Returns any error that may happen while a message is sent to the worker.
     fn execute(
-        &self,
+        &mut self,
         f: impl FnOnce(JsValue) + Send + 'static,
         js_payload: JsValue,
     ) -> Result<Worker, JsValue> {
@@ -133,8 +127,7 @@ impl WorkerPool {
     /// whatn it's done the worker is ready to execute more work. This method is
     /// used for all spawned workers to ensure that when the work is finished
     /// the worker is reclaimed back into this pool.
-    fn set_reclaim_callback(&self, worker: Worker) {
-        let state = Rc::downgrade(&self.state);
+    fn set_reclaim_callback(&mut self, worker: Worker) {
         let worker2 = worker.clone();
         let reclaim = Closure::<dyn FnMut(_)>::new(move |event: Event| {
             console_log!("In reclaim callback");
@@ -148,9 +141,11 @@ impl WorkerPool {
                 let msg_type = Reflect::get(&data, &"type".into()).ok();
                 match msg_type.as_ref().and_then(|v| v.as_string()).as_deref() {
                     Some("done") => {
-                        if let Some(state) = state.upgrade() {
-                            state.push(worker2.clone());
-                        }
+                        WORKER_POOL.with(|p| {
+                            if let Some(pool) = p.borrow_mut().as_mut() {
+                                pool.push_worker(worker2.clone());
+                            }
+                        });
                     }
                     Some("callback") => {
                         if let Ok(ptr) = Reflect::get(&data, &"ptr".into()) {
@@ -166,7 +161,16 @@ impl WorkerPool {
         });
         worker.set_onmessage(Some(reclaim.as_ref().unchecked_ref()));
         reclaim.forget(); // Leak intentionally - closure lives as long as worker
-        self.state.push(worker);
+        self.workers.push(worker);
+    }
+
+    fn push_worker(&mut self, worker: Worker) {
+        for prev in self.workers.iter() {
+            let prev: &JsValue = prev;
+            let worker: &JsValue = &worker;
+            assert!(prev != worker);
+        }
+        self.workers.push(worker);
     }
 }
 
@@ -176,13 +180,13 @@ impl WorkerPool {
     /// This pool manages a set of web workers to draw from, and `f` will be
     /// spawned quickly into one if the worker is idle. Panics if no idle
     /// workers are available.
-    pub fn run(&self, f: impl FnOnce() + Send + 'static) -> Result<(), JsValue> {
+    pub fn run(&mut self, f: impl FnOnce() + Send + 'static) -> Result<(), JsValue> {
         self.execute(|_js_payoad| f(), JsValue::undefined())?;
         Ok(())
     }
 
     pub fn run_with_js_payload(
-        &self,
+        &mut self,
         f: impl FnOnce(JsValue) + Send + 'static,
         js_payload: JsValue,
     ) -> Result<(), JsValue> {
@@ -191,16 +195,16 @@ impl WorkerPool {
     }
 
     pub fn get_worker_count(&self) -> usize {
-        self.state.workers.borrow().len()
+        self.workers.len()
     }
 
     /// Returns web worker count.
     pub fn broadcast(
-        &self,
+        &mut self,
         f: Arc<dyn Fn(JsValue) + Send + Sync>,
         js_payload: JsValue,
     ) -> Result<(), JsValue> {
-        let worker_count = self.state.workers.borrow().len();
+        let worker_count = self.workers.len();
         for _ in 0..worker_count {
             let f = f.clone();
             let payload = js_payload.clone();
@@ -210,16 +214,22 @@ impl WorkerPool {
     }
 }
 
-impl PoolState {
-    fn push(&self, worker: Worker) {
-        let mut workers = self.workers.borrow_mut();
-        for prev in workers.iter() {
-            let prev: &JsValue = prev;
-            let worker: &JsValue = &worker;
-            assert!(prev != worker);
-        }
-        workers.push(worker);
-    }
+#[wasm_bindgen]
+pub fn init_worker_pool(initial: usize) -> Result<(), JsValue> {
+    let pool = WorkerPool::new(initial)?;
+    WORKER_POOL.with(|p| *p.borrow_mut() = Some(pool));
+    Ok(())
+}
+
+pub fn with_worker_pool<F, R>(f: F) -> Result<R, JsValue>
+where
+    F: FnOnce(&mut WorkerPool) -> Result<R, JsValue>,
+{
+    WORKER_POOL.with(|p| {
+        let mut pool = p.borrow_mut();
+        let pool = pool.as_mut().ok_or_else(|| JsValue::from_str("WorkerPool not initialized"))?;
+        f(pool)
+    })
 }
 
 /// Entry point invoked by `worker.js`

@@ -1,4 +1,4 @@
-import wasm_bindgen, { Scene, WorkerPool } from './wasm/wasm_mt_hotswap_example.js'
+import wasm_bindgen, { Scene, init_worker_pool } from './wasm/wasm_mt_hotswap_example.js'
 
 const button = document.getElementById('render');
 const canvas = document.getElementById('canvas');
@@ -39,7 +39,7 @@ function run() {
   // The maximal concurrency of our web worker pool is `hardwareConcurrency`,
   // so set that up here and this ideally is the only location we create web
   // workers.
-  pool = new WorkerPool(navigator.hardwareConcurrency + 1); // plus one because rayon needs it
+  init_worker_pool(navigator.hardwareConcurrency + 1); // plus one because rayon needs it
 
   // Configure various buttons and such.
   button.onclick = function() {
