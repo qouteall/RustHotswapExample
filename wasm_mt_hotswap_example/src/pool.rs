@@ -8,6 +8,7 @@
 use js_sys::{Object, Reflect};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, WorkerOptions};
 use web_sys::{ErrorEvent, Event, Worker};
@@ -171,6 +172,25 @@ impl WorkerPool {
         js_payload: JsValue,
     ) -> Result<(), JsValue> {
         self.execute(f, js_payload)?;
+        Ok(())
+    }
+
+    pub fn get_worker_count(&self) -> usize {
+        self.state.workers.borrow().len()
+    }
+
+    /// Returns web worker count.
+    pub fn broadcast(
+        &self,
+        f: Arc<dyn Fn(JsValue) + Send + Sync>,
+        js_payload: JsValue,
+    ) -> Result<(), JsValue> {
+        let worker_count = self.state.workers.borrow().len();
+        for _ in 0..worker_count {
+            let f = f.clone();
+            let payload = js_payload.clone();
+            self.execute(move |p| f(p), payload)?;
+        }
         Ok(())
     }
 }
