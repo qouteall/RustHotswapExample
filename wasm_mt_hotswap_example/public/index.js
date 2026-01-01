@@ -39,7 +39,7 @@ function run() {
   // The maximal concurrency of our web worker pool is `hardwareConcurrency`,
   // so set that up here and this ideally is the only location we create web
   // workers.
-  init_worker_pool(navigator.hardwareConcurrency + 1); // plus one because rayon needs it
+  init_worker_pool(navigator.hardwareConcurrency + 1);
 
   // Configure various buttons and such.
   button.onclick = function() {
@@ -73,7 +73,6 @@ function run() {
 let rendering = null;
 let start = null;
 let interval = null;
-let pool = null;
 
 class State {
   constructor(wasm) {
@@ -122,5 +121,5 @@ function render(scene) {
     rendering.stop();
     rendering = null;
   }
-  rendering = new State(scene.render(parseInt(concurrency.value), pool));
+  rendering = new State(scene.render(parseInt(concurrency.value)));
 }

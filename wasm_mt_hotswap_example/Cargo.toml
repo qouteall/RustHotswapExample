@@ -44,5 +44,6 @@ features = [
   "Element",
   "Location",
   "CloseEvent",
-  "WebSocket"
+  "WebSocket",
+  "Response"
 ]

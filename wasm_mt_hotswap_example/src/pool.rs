@@ -151,7 +151,8 @@ impl WorkerPool {
                         if let Ok(ptr) = Reflect::get(&data, &"ptr".into()) {
                             let ptr = ptr.as_f64().unwrap() as u32;
                             let work = unsafe { Box::from_raw(ptr as *mut Work) };
-                            let js_payload = Reflect::get(&data, &"jsPayload".into()).unwrap_or(JsValue::undefined());
+                            let js_payload = Reflect::get(&data, &"jsPayload".into())
+                                .unwrap_or(JsValue::undefined());
                             (work.func)(js_payload);
                         }
                     }
@@ -227,8 +228,26 @@ where
 {
     WORKER_POOL.with(|p| {
         let mut pool = p.borrow_mut();
-        let pool = pool.as_mut().ok_or_else(|| JsValue::from_str("WorkerPool not initialized"))?;
+        let pool = pool
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("WorkerPool not initialized"))?;
         f(pool)
+    })
+}
+
+pub fn submit_to_pool(
+    f: impl FnOnce() + Send + 'static
+) -> Result<(), JsValue> {
+    submit_to_pool_with_js_payload(|_| f(), JsValue::undefined())
+}
+
+pub fn submit_to_pool_with_js_payload(
+    f: impl FnOnce(JsValue) + Send + 'static,
+    js_payload: JsValue,
+) -> Result<(), JsValue> {
+    with_worker_pool(move |pool| -> Result<(), JsValue> {
+        pool.execute(f, js_payload)?;
+        Ok(())
     })
 }
 
@@ -245,10 +264,13 @@ pub fn child_entry_point(ptr: u32, js_payload: JsValue) -> Result<(), JsValue> {
 }
 
 /// Send a callback from worker to main thread with a JS payload
-pub fn worker_send_callback(f: Box<dyn FnOnce(JsValue) + Send>, js_payload: JsValue) -> Result<(), JsValue> {
-    let global: DedicatedWorkerGlobalScope = js_sys::global()
-        .dyn_into()
-        .map_err(|_| JsValue::from_str("worker_send_callback can only be called from a web worker"))?;
+pub fn worker_send_callback(
+    f: Box<dyn FnOnce(JsValue) + Send>,
+    js_payload: JsValue,
+) -> Result<(), JsValue> {
+    let global: DedicatedWorkerGlobalScope = js_sys::global().dyn_into().map_err(|_| {
+        JsValue::from_str("worker_send_callback can only be called from a web worker")
+    })?;
     let work = Box::new(Work { func: f });
     let ptr = Box::into_raw(work);
     let msg = Object::new();

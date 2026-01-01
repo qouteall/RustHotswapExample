@@ -11,11 +11,13 @@ use js_sys::{
     WebAssembly::{self, Memory, Table},
 };
 use rayon::prelude::*;
-use subsecond::{apply_patch, JumpTable, PatchError};
+use subsecond::{JumpTable, PatchError};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{console, ImageData, Response};
+use web_sys::{console, ImageData};
 use web_sys::{MessageEvent, WebSocket};
+
+use crate::pool::submit_to_pool;
 
 fn main() {
     // this is just placeholder
@@ -63,8 +65,7 @@ impl Scene {
     /// get notifications when the render has completed.
     pub fn render(
         self,
-        concurrency: usize,
-        pool: &pool::WorkerPool,
+        concurrency: usize
     ) -> Result<RenderingScene, JsValue> {
         let scene = self.inner;
         let height = scene.height;
@@ -81,7 +82,7 @@ impl Scene {
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(concurrency)
             .spawn_handler(|thread| {
-                pool.run(|| thread.run()).unwrap();
+                submit_to_pool(|| thread.run());
                 // Update: seems that it must spawn new threads, cannot queue task
                 // otherwise parallelism is not enough, rayon will stuck inside
                 Ok(())
@@ -94,7 +95,7 @@ impl Scene {
         // which actually does the whole rayon business. When our returned
         // future is resolved we can pull out the final version of the image.
         let (tx, rx) = oneshot::channel();
-        pool.run(move || {
+        submit_to_pool(move || {
             thread_pool.install(|| {
                 rgb_data
                     .par_chunks_mut(4)
@@ -274,10 +275,10 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
         }
 
         // Start the fetch of the module
-        let response = web_sys::window().unwrap_throw().fetch_with_str(&path);
+        let response: Promise = web_sys::window().unwrap_throw().fetch_with_str(&path);
 
         // Wait for the fetch to complete - we need the wasm module size in bytes to reserve in the memory
-        let response: Response = JsFuture::from(response).await.unwrap().unchecked_into();
+        let response: web_sys::Response = JsFuture::from(response).await.unwrap().unchecked_into();
 
         // If the status is not success, we bail
         if !response.ok() {
