@@ -320,7 +320,7 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
             &jump_table,
             &module.clone().unchecked_into::<Module>(),
             memory_base,
-        );
+        ).await;
 
         let web_worker_num = pool_get_web_worker_num();
         let mut hotpatch_state = HOTPATCH_STATE.try_write().expect("cannot lock");
@@ -340,33 +340,37 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
 
         broadcast_to_workers(
             Arc::new(move |js_value| {
-                let module: Module = js_value.into();
-                let hotpatch_state = HOTPATCH_STATE.read().expect("cannot read lock");
-                let is_all_done = match *hotpatch_state {
-                    HotPatchState::Hotpatching(ref state_when_hotpatching) => {
-                        do_per_thread_hotpatch(
-                            table_base,
-                            &state_when_hotpatching.jump_table.as_ref().unwrap(),
-                            &module,
-                            memory_base,
-                        );
-                        let original = state_when_hotpatching
-                            .remaining_hotpatch_webworker_num
-                            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                        original == 1
-                    }
-                    HotPatchState::HaventHotpatched => panic!("wrong state HaventHotpatched"),
-                    HotPatchState::Hotpatched => panic!("wrong state Hotpatched"),
-                };
-                // unlock
-                drop(hotpatch_state);
+                
+                wasm_bindgen_futures::spawn_local(async move {
+                    let module: Module = js_value.into();
 
-                if is_all_done {
-                    finalize_hotpatch_after_all_web_workers_loaded_patch();
-                }
+                    let hotpatch_state = HOTPATCH_STATE.read().expect("cannot read lock");
+                    let is_all_done = match *hotpatch_state {
+                        HotPatchState::Hotpatching(ref state_when_hotpatching) => {
+                            do_per_thread_hotpatch(
+                                table_base,
+                                &state_when_hotpatching.jump_table.as_ref().unwrap(),
+                                &module,
+                                memory_base,
+                            ).await;
+                            let original = state_when_hotpatching
+                                .remaining_hotpatch_webworker_num
+                                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                            original == 1
+                        }
+                        HotPatchState::HaventHotpatched => panic!("wrong state HaventHotpatched"),
+                        HotPatchState::Hotpatched => panic!("wrong state Hotpatched"),
+                    };
+                    // unlock
+                    drop(hotpatch_state);
+    
+                    if is_all_done {
+                        finalize_hotpatch_after_all_web_workers_loaded_patch();
+                    }
+                });
             }),
             module,
-        );
+        ).unwrap();
     });
 
     Ok(())
