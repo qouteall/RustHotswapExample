@@ -21,9 +21,9 @@ js-sys = "0.3.83"
 wasm-bindgen = "0.2.106"
 wasm-bindgen-futures = "0.4.56"
 
-subsecond = { path = "C:\\0Repos\\dioxus\\packages\\subsecond\\subsecond"}
+subsecond = { git = "https://github.com/qouteall/dioxus", branch = "test_wasm_mt2" }
 dioxus-cli-config = { version = "0.7.1", features = ["web"] }
-dioxus-devtools = { path = "C:\\0Repos\\dioxus\\packages\\devtools"}
+dioxus-devtools = { git = "https://github.com/qouteall/dioxus", branch = "test_wasm_mt2" }
 
 [dependencies.web-sys]
 version = "0.3.83"
