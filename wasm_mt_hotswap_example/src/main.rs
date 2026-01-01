@@ -221,11 +221,10 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
             match serde_json::from_str::<DevserverMsg>(string) {
                 Ok(DevserverMsg::HotReload(hr)) => {
                     if let Some(jumptable) = hr.clone().jump_table {
-                        // TODO involve sending message to all web workers
-                        // need to refactor worker pool
-                    }
+                        unsafe {wasm_mt_apply_patch(jumptable); }
 
-                    // on_hotpatch_callback();
+                        on_hotpatch_callback();
+                    }
                 }
 
                 Ok(DevserverMsg::Shutdown) => {
@@ -305,7 +304,6 @@ pub unsafe fn wasm_mt_apply_patch(mut table: JumpTable) -> Result<(), PatchError
         let page_count = (buffer.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32;
         let memory_base = (page_count + 1) * PAGE_SIZE;
 
-        // We need to grow the memory to accommodate the new module
         memory.grow((dl_bytes.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32 + 1);
 
         let module_promise = WebAssembly::compile_streaming(dl_bytes.unchecked_ref());
@@ -380,8 +378,6 @@ pub async fn init_hotpatch_per_web_worker(
     let imports = Object::new();
     Reflect::set(&imports, &"env".into(), &env).unwrap();
 
-    // Download the module, returning { module, instance }
-    // we unwrap here instead of using `?` since this whole thing is async
     let result_object = JsFuture::from(WebAssembly::instantiate_module(wasm_module, &imports))
         .await
         .unwrap();
@@ -394,6 +390,8 @@ pub async fn init_hotpatch_per_web_worker(
     let exports: Object = Reflect::get(&instance, &"exports".into())
         .unwrap()
         .unchecked_into();
+
+    // https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md#relocations
     _ = Reflect::get(&exports, &"__wasm_apply_data_relocs".into())
         .unwrap()
         .unchecked_into::<js_sys::Function>()
@@ -402,6 +400,8 @@ pub async fn init_hotpatch_per_web_worker(
         .unwrap()
         .unchecked_into::<js_sys::Function>()
         .call0(&JsValue::undefined());
+
+    // https://github.com/WebAssembly/tool-conventions/blob/main/Linking.md#start-section
     _ = Reflect::get(&exports, &"__wasm_call_ctors".into())
         .unwrap()
         .unchecked_into::<js_sys::Function>()
@@ -410,7 +410,7 @@ pub async fn init_hotpatch_per_web_worker(
 
 pub fn finalize_hotpatch_after_all_web_workers_loaded_patch() {
     // must release read lock before
-    let mut hotpatch_state = HOTPATCH_STATE.try_write().expect("lock poison");
+    let mut hotpatch_state = HOTPATCH_STATE.try_write().expect("cannot lock");
 
     match *hotpatch_state {
         HotPatchState::HaventHotpatched => panic!("Wrong state HaventHotpatched"),
