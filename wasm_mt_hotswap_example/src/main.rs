@@ -51,7 +51,6 @@ impl Scene {
     /// deserialize here into an actual scene.
     #[wasm_bindgen(constructor)]
     pub fn new(object: JsValue) -> Result<Scene, JsValue> {
-        
         Ok(Scene {
             inner: serde_wasm_bindgen::from_value(object)
                 .map_err(|e| JsValue::from(e.to_string()))?,
@@ -311,8 +310,6 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
         let module_promise = WebAssembly::compile(dl_bytes.dyn_ref().expect("casting for compile"));
         let module = JsFuture::from(module_promise).await.unwrap();
 
-
-        
         let table_base = funcs.length();
 
         for v in jump_table.map.values_mut() {
@@ -324,7 +321,8 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
             &jump_table,
             &module.clone().unchecked_into::<Module>(),
             memory_base,
-        ).await;
+        )
+        .await;
 
         let web_worker_num = pool_get_web_worker_num();
         let mut hotpatch_state = HOTPATCH_STATE.try_write().expect("cannot lock");
@@ -344,7 +342,6 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
 
         broadcast_to_workers(
             Arc::new(move |js_value| {
-                
                 wasm_bindgen_futures::spawn_local(async move {
                     let module: Module = js_value.into();
 
@@ -356,7 +353,8 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
                                 &state_when_hotpatching.jump_table.as_ref().unwrap(),
                                 &module,
                                 memory_base,
-                            ).await;
+                            )
+                            .await;
                             let original = state_when_hotpatching
                                 .remaining_hotpatch_webworker_num
                                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -367,14 +365,15 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
                     };
                     // unlock
                     drop(hotpatch_state);
-    
+
                     if is_all_done {
                         finalize_hotpatch_after_all_web_workers_loaded_patch();
                     }
                 });
             }),
             module,
-        ).unwrap();
+        )
+        .unwrap();
     });
 
     Ok(())
@@ -386,10 +385,8 @@ pub async fn do_per_thread_hotpatch(
     wasm_module: &Module,
     memory_base: u32,
 ) {
-    let funcs: Table = wasm_bindgen::function_table().unchecked_into();
-    let memory: Memory = wasm_bindgen::memory().unchecked_into();
-    let exports: Object = wasm_bindgen::exports().unchecked_into();
-    let buffer: SharedArrayBuffer = memory.buffer().unchecked_into();
+    let funcs: Table = wasm_bindgen::function_table().into();
+    let exports: Object = wasm_bindgen::exports().into();
 
     let old_table_size = funcs.length();
 
@@ -399,7 +396,9 @@ pub async fn do_per_thread_hotpatch(
     // In theory we could just put all the ifuncs in the jump map and use that for our count,
     // but there's no guarantee from the jump table that it references "itself"
     // We might need a sentinel value for each ifunc in the jump map to indicate that it is
-    let table_base = funcs.grow(jump_table.ifunc_count as u32).unwrap();
+    let table_base = funcs
+        .grow(jump_table.ifunc_count as u32)
+        .expect("growing table");
 
     // Build up the import object. We copy everything over from the current exports, but then
     // need to add in the memory and table base offsets for the relocations to work.
@@ -420,35 +419,41 @@ pub async fn do_per_thread_hotpatch(
 
     // Move memory, __tls_base, __stack_pointer, __indirect_function_table, and all exports over
     for key in Object::keys(&exports) {
-        Reflect::set(&env, &key, &Reflect::get(&exports, &key).unwrap()).unwrap();
+        Reflect::set(
+            &env,
+            &key,
+            &Reflect::get(&exports, &key).expect("getting field from exports"),
+        )
+        .expect("setting env");
     }
 
     // Set the memory and table in the imports
     // Following this pattern: Global.new({ value: "i32", mutable: false }, value)
     for (name, value) in [("__table_base", table_base), ("__memory_base", memory_base)] {
         let descriptor = Object::new();
-        Reflect::set(&descriptor, &"value".into(), &"i32".into()).unwrap();
-        Reflect::set(&descriptor, &"mutable".into(), &false.into()).unwrap();
-        let value = WebAssembly::Global::new(&descriptor, &value.into()).unwrap();
-        Reflect::set(&env, &name.into(), &value.into()).unwrap();
+        Reflect::set(&descriptor, &"value".into(), &"i32".into()).expect("setting descriptor");
+        Reflect::set(&descriptor, &"mutable".into(), &false.into()).expect("setting descriptor2");
+        let value = WebAssembly::Global::new(&descriptor, &value.into()).expect("new global");
+        Reflect::set(&env, &name.into(), &value.into()).expect("setting env global");
     }
 
     // Set the memory and table in the imports
     let imports = Object::new();
-    Reflect::set(&imports, &"env".into(), &env).unwrap();
+    Reflect::set(&imports, &"env".into(), &env).expect("setting env into imports");
 
     let result_object = JsFuture::from(WebAssembly::instantiate_module(wasm_module, &imports))
         .await
-        .unwrap();
+        .expect("instantiating module");
 
     // We need to run the data relocations and then fire off the constructors
     let res: Object = result_object.unchecked_into();
     let instance: Object = Reflect::get(&res, &"instance".into())
-        .unwrap()
+        .expect("getting instance")
         .unchecked_into();
     let exports: Object = Reflect::get(&instance, &"exports".into())
-        .unwrap()
+        .expect("getting exports")
         .unchecked_into();
+    
 
     // https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md#relocations
     _ = Reflect::get(&exports, &"__wasm_apply_data_relocs".into())
