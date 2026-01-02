@@ -441,19 +441,15 @@ pub async fn do_per_thread_hotpatch(
     let imports = Object::new();
     Reflect::set(&imports, &"env".into(), &env).expect("setting env into imports");
 
-    let result_object = JsFuture::from(WebAssembly::instantiate_module(wasm_module, &imports))
+    let instance = JsFuture::from(WebAssembly::instantiate_module(wasm_module, &imports))
         .await
         .expect("instantiating module");
 
-    // We need to run the data relocations and then fire off the constructors
-    let res: Object = result_object.unchecked_into();
-    let instance: Object = Reflect::get(&res, &"instance".into())
-        .expect("getting instance")
-        .unchecked_into();
+    console::log_2(&"result instance".into(), &instance);
+
     let exports: Object = Reflect::get(&instance, &"exports".into())
         .expect("getting exports")
         .unchecked_into();
-    
 
     // https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md#relocations
     _ = Reflect::get(&exports, &"__wasm_apply_data_relocs".into())
