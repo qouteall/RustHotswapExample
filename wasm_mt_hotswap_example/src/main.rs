@@ -93,20 +93,23 @@ impl Scene {
         let (tx, rx) = oneshot::channel();
         submit_to_pool(move || {
             thread_pool.install(|| {
-                rgb_data
-                    .par_chunks_mut(4)
-                    .enumerate()
-                    .for_each(|(i, chunk)| {
-                        let i = i as u32;
-                        let x = i % width;
-                        let y = i / width;
-                        let ray = raytracer::Ray::create_prime(x, y, &scene);
-                        let result = raytracer::cast_ray(&scene, &ray, 0).to_rgba();
-                        chunk[0] = result.data[0];
-                        chunk[1] = result.data[1];
-                        chunk[2] = result.data[2];
-                        chunk[3] = result.data[3];
-                    });
+                subsecond::call(|| {
+                    rgb_data
+                        .par_chunks_mut(4)
+                        .enumerate()
+                        .for_each(|(i, chunk)| {
+                            let i = i as u32;
+                            let x = i % width;
+                            let y = i / width;
+                            let ray = raytracer::Ray::create_prime(x, y, &scene);
+                            let result = raytracer::cast_ray(&scene, &ray, 0).to_rgba();
+                            chunk[0] = result.data[0];
+                            // chunk[0] = 255u8;
+                            chunk[1] = result.data[1];
+                            chunk[2] = result.data[2];
+                            chunk[3] = result.data[3];
+                        });
+                })
             });
             drop(tx.send(rgb_data));
         })?;
