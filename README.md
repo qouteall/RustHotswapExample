@@ -45,15 +45,23 @@ It will deadloop if ran without connecting to dev server (https://github.com/Dio
 
 Note that it will restart internal axum server after hotswap. It cannot keep long connections (e.g. websocket of webserver) after hotpatch. It can be solved by changing the hotswap boundary (then hotpatch cannot add or remove Restful APIs). TODO
 
-## In-borwser multi-threaded wasm hotswap (work-in-progress)
+## In-borwser multi-threaded wasm hotswa
 
 Changed from this example https://github.com/wasm-bindgen/wasm-bindgen/tree/main/examples/raytrace-parallel
 
-I changed it to use ES module. (Firefox now supports ES module.)
+It requires my fork of dioxus test_wasm_mt2 branch https://github.com/qouteall/dioxus/tree/test_wasm_mt2 (it's hacky, also I temporarily commented out some bundling code)
 
-It uses nightly Rust.
+It uses nightly Rust (currently wasm multithreading requires nightly Rust).
 
-How to build and run without dx hotswap, without wasm-pack:
+Hotswap with dx:
+
+Go into `wasm_mt_hotswap_example` folder
+
+```
+dx serve --hot-patch --target wasm32-unknown-unknown --bundle web "--cargo-args=-Zbuild-std=std,panic_abort" --inject-loading-scripts=false --cross-origin-policy --disable-js-glue-shim
+```
+
+### How to run it without dx
 
 Go into `wasm_mt_hotswap_example` folder
 
@@ -63,19 +71,12 @@ cargo build --target wasm32-unknown-unknown "-Zbuild-std=std,panic_abort" --conf
 wasm-bindgen ../target/wasm32-unknown-unknown/debug/wasm_mt_hotswap_example.wasm --out-dir ../dist/raytrace-parallel/wasm --typescript --target web
 ```
 
+
 Then copy files in `wasm_mt_hotswap_example/public/*` and `wasm_mt_hotswap/index.html` into `dist/raytrace-parallel` folder.
 
 In VSCode, install live preview plugin, open `dist/raytrace-parallel/index.html` in VSCode, click show-preview on right top corner, then click the icon on the right side of address bar, click "open in browser".
 
 Note that in `.vscode/settings.json` it adds necessary header for site isolation, which is necessary for `SharedArrayBuffer`, which is necessary for wasm multi-threading.
-
-Hotswap with dx (not yet working):
-
-Go to `wasm_mt_hotswap_example` folder
-
-```
-dx serve --hot-patch --target wasm32-unknown-unknown --bundle web "--cargo-args=-Zbuild-std=std,panic_abort" --inject-loading-scripts=false --cross-origin-policy --disable-js-glue-shim
-```
 
 ---
 
