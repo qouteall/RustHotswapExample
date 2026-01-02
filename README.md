@@ -45,7 +45,7 @@ It will deadloop if ran without connecting to dev server (https://github.com/Dio
 
 Note that it will restart internal axum server after hotswap. It cannot keep long connections (e.g. websocket of webserver) after hotpatch. It can be solved by changing the hotswap boundary (then hotpatch cannot add or remove Restful APIs). TODO
 
-## In-borwser multi-threaded wasm hotswa
+## In-borwser multi-threaded wasm hotswap
 
 Changed from this example https://github.com/wasm-bindgen/wasm-bindgen/tree/main/examples/raytrace-parallel
 
