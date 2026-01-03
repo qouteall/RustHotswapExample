@@ -25,6 +25,8 @@ subsecond = { git = "https://github.com/qouteall/dioxus", branch = "test_wasm_mt
 dioxus-cli-config = { version = "0.7.1", features = ["web"] }
 dioxus-devtools = { git = "https://github.com/qouteall/dioxus", branch = "test_wasm_mt2" }
 
+manganis = "0.7.2"
+
 [dependencies.web-sys]
 version = "0.3.83"
 features = [

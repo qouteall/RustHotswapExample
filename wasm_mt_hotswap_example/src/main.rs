@@ -10,6 +10,7 @@ use js_sys::{
     Object, Promise, SharedArrayBuffer, Uint8ClampedArray,
     WebAssembly::{self, Memory, Table},
 };
+use manganis::{asset, Asset};
 use rayon::prelude::*;
 use subsecond::{JumpTable, PatchError};
 use wasm_bindgen::prelude::*;
@@ -18,6 +19,8 @@ use web_sys::{console, ImageData};
 use web_sys::{MessageEvent, WebSocket};
 
 use crate::pool::{broadcast_to_workers, pool_get_web_worker_num, submit_to_pool};
+
+static TEST_CSS_ASSET: Asset = asset!("/assets/test.css");
 
 fn main() {
     // this is just placeholder
@@ -103,8 +106,8 @@ impl Scene {
                             let y = i / width;
                             let ray = raytracer::Ray::create_prime(x, y, &scene);
                             let result = raytracer::cast_ray(&scene, &ray, 0).to_rgba();
-                            chunk[0] = result.data[0];
-                            // chunk[0] = 255u8;
+                            // chunk[0] = result.data[0];
+                            chunk[0] = 255u8;
                             chunk[1] = result.data[1];
                             chunk[2] = result.data[2];
                             chunk[3] = result.data[3];
