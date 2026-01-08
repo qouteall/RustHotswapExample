@@ -370,7 +370,9 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
             .expect("await on module promise")
             .into();
 
-        let dylink_section_info = parse_dylink_section(&module);
+        let dylink_section_info = parse_dylink_section(&module).expect("Cannot parse dylink.0 section");
+
+        console_log!("Patch binary data size {}", dylink_section_info.mem_info.memory_size);
 
         const PAGE_SIZE: u32 = 64 * 1024;
         let page_count = dylink_section_info.mem_info.memory_size.div_ceil(PAGE_SIZE);
@@ -453,59 +455,13 @@ pub struct DylinkSectionInfo {
     mem_info: DylinkMemInfo,
 }
 
-pub struct DylinkSectionParser<'a> {
-    buffer: &'a [u8],
+fn read_u8(buf: &mut &[u8]) -> anyhow::Result<u8> {
+    let mut local = [0u8];
+    buf.read_exact(&mut local)?;
+    Ok(local[0])
 }
 
-impl<'a> DylinkSectionParser<'a> {
-    pub fn new(buffer: &[u8]) -> DylinkSectionParser {
-        DylinkSectionParser { buffer }
-    }
-
-    pub fn eof(&self) -> bool {
-        self.buffer.is_empty()
-    }
-
-    pub fn read_u8(&mut self) -> anyhow::Result<u8> {
-        let mut local = [0u8];
-        self.buffer.read_exact(&mut local)?;
-
-        Ok(local[0])
-    }
-
-    pub fn read_var_u32(&mut self) -> anyhow::Result<u32> {
-        let value: u64 = leb128::read::unsigned(&mut self.buffer).context("Reading LEB128")?;
-        Ok(value as u32)
-    }
-
-    // https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md#the-dylink0-section
-    fn read_dylink_section(&mut self) -> anyhow::Result<DylinkSectionInfo> {
-        let mut memory_info: Option<DylinkMemInfo> = None;
-        loop {
-            if self.eof() {
-                break;
-            }
-            let sub_section_type = self.read_u8()?;
-            match sub_section_type {
-                1 => {
-                    memory_info = Some(DylinkMemInfo {
-                        memory_size: self.read_var_u32()?,
-                        memory_alignment: self.read_var_u32()?,
-                        table_size: self.read_var_u32()?,
-                        table_alignment: self.read_var_u32()?,
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        Ok(DylinkSectionInfo {
-            mem_info: memory_info.context("No memory info")?,
-        })
-    }
-}
-
-fn parse_dylink_section(module: &Module) -> DylinkSectionInfo {
+fn parse_dylink_section(module: &Module) -> anyhow::Result<DylinkSectionInfo> {
     let dylink_section_arr = WebAssembly::Module::custom_sections(&module, "dylink.0");
     if dylink_section_arr.length() == 0 {
         panic!("The hotpatch WASM binary doesn't have dylink.0 custom section")
@@ -515,11 +471,35 @@ fn parse_dylink_section(module: &Module) -> DylinkSectionInfo {
     let mut dylink_bytes = vec![0u8; dylink_section.length() as usize];
     dylink_section.copy_to(&mut dylink_bytes);
 
-    let mut parser = DylinkSectionParser::new(&dylink_bytes);
+    let mut buf: &[u8] = &dylink_bytes;
 
-    parser
-        .read_dylink_section()
-        .expect("Cannot parse dylink section")
+    let mut memory_info: Option<DylinkMemInfo> = None;
+    loop {
+        if buf.len() == 0 {
+            break;
+        }
+        let sub_section_type = read_u8(&mut buf)?;
+        let payload_len = leb128::read::unsigned(&mut buf)? as usize;
+        let mut sub_buf: &[u8] = &buf[0..payload_len];
+        buf = &buf[payload_len..];
+        match sub_section_type {
+            1 => {
+                memory_info = Some(DylinkMemInfo {
+                    memory_size: leb128::read::unsigned(&mut sub_buf)? as u32,
+                    memory_alignment: leb128::read::unsigned(&mut sub_buf)? as u32,
+                    table_size: leb128::read::unsigned(&mut sub_buf)? as u32,
+                    table_alignment: leb128::read::unsigned(&mut sub_buf)? as u32,
+                });
+            }
+            _ => {}
+        }
+
+        console_log!("Read one subsection in dylink.0")
+    }
+
+    Ok(DylinkSectionInfo {
+        mem_info: memory_info.context("No memory info")?,
+    })
 }
 
 pub async fn do_per_thread_hotpatch(
@@ -557,7 +537,6 @@ pub async fn do_per_thread_hotpatch(
     //        ..base_exports
     //     },
     // };
-    // TODO see if it changes in multithreading
     let env = Object::new();
 
     // Move memory, __tls_base, __stack_pointer, __indirect_function_table, and all exports over
