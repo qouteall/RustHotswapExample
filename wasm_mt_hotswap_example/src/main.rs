@@ -10,6 +10,7 @@ use js_sys::{
 use manganis::{asset, Asset};
 use rayon::prelude::*;
 use std::{io, mem};
+use std::io::Read;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 use std::sync::{Arc, RwLock};
@@ -454,61 +455,27 @@ pub struct DylinkSectionInfo {
 
 pub struct DylinkSectionParser<'a> {
     buffer: &'a [u8],
-    position: usize,
 }
 
 impl<'a> DylinkSectionParser<'a> {
-    pub fn new(buffer: &[u8], position: usize) -> DylinkSectionParser {
-        DylinkSectionParser { buffer, position }
+    pub fn new(buffer: &[u8]) -> DylinkSectionParser {
+        DylinkSectionParser { buffer }
     }
 
-    // copied from wasmparser
-    // cannot use leb1288 https://docs.rs/leb128/latest/leb128/index.html because it's not no-std
-    // not directly using wasmparser to reduce debug binary size
-
     pub fn eof(&self) -> bool {
-        self.position >= self.buffer.len()
+        self.buffer.is_empty()
     }
 
     pub fn read_u8(&mut self) -> anyhow::Result<u8> {
-        let b = match self.buffer.get(self.position) {
-            Some(b) => *b,
-            None => bail!("EOF"),
-        };
-        self.position += 1;
-        Ok(b)
+        let mut local = [0u8];
+        self.buffer.read_exact(&mut local)?;
+
+        Ok(local[0])
     }
 
     pub fn read_var_u32(&mut self) -> anyhow::Result<u32> {
-        // Optimization for single byte i32.
-        let byte = self.read_u8()?;
-        if (byte & 0x80) == 0 {
-            Ok(u32::from(byte))
-        } else {
-            self.read_var_u32_big(byte)
-        }
-    }
-
-    fn read_var_u32_big(&mut self, byte: u8) -> anyhow::Result<u32> {
-        let mut result = (byte & 0x7F) as u32;
-        let mut shift = 7;
-        loop {
-            let byte = self.read_u8()?;
-            result |= ((byte & 0x7F) as u32) << shift;
-            if shift >= 25 && (byte >> (32 - shift)) != 0 {
-                let msg = if byte & 0x80 != 0 {
-                    "invalid var_u32: integer representation too long"
-                } else {
-                    "invalid var_u32: integer too large"
-                };
-                bail!(msg)
-            }
-            shift += 7;
-            if (byte & 0x80) == 0 {
-                break;
-            }
-        }
-        Ok(result)
+        let value: u64 = leb128::read::unsigned(&mut self.buffer).context("Reading LEB128")?;
+        Ok(value as u32)
     }
 
     // https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md#the-dylink0-section
@@ -548,7 +515,7 @@ fn parse_dylink_section(module: &Module) -> DylinkSectionInfo {
     let mut dylink_bytes = vec![0u8; dylink_section.length() as usize];
     dylink_section.copy_to(&mut dylink_bytes);
 
-    let mut parser = DylinkSectionParser::new(&dylink_bytes, 0);
+    let mut parser = DylinkSectionParser::new(&dylink_bytes);
 
     parser
         .read_dylink_section()
