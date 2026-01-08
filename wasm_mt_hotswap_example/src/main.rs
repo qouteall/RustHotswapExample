@@ -1,7 +1,3 @@
-use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::sync::{Arc, RwLock};
-
 use dioxus_devtools::DevserverMsg;
 use futures_channel::oneshot;
 use js_sys::WebAssembly::Module;
@@ -12,6 +8,10 @@ use js_sys::{
 };
 use manganis::{asset, Asset};
 use rayon::prelude::*;
+use std::mem;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
+use std::sync::{Arc, RwLock};
 use subsecond::{JumpTable, PatchError};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -253,6 +253,59 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
     ));
 
     console::log_1(&"Hotpatch initialized".into());
+}
+
+/// In WebAssembly multi-threading, applying patch cannot be done in one-shot function call.
+/// Because currently the Wasm function table cannot be shared across threads.
+/// Any dynamic linking requires each thread to cooperatively create new WebAssembly instance,
+/// and apply changes to their own function table.
+/// We must change global jump table after all threads have dynamically linked it.
+///
+/// One-shot hotpatch in Wasm multithreading is possible after shared-everything-threads proposal,
+/// which is still in early stage. https://github.com/WebAssembly/shared-everything-threads
+#[cfg(target_arch = "wasm32")]
+pub struct WasmMultiThreadedHotPatchApplier {
+    jump_table: JumpTable,
+    pending_web_worker_count: AtomicU32,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WasmMultiThreadedHotPatchApplier {
+    pub fn prepare_and_dynamic_link_current_thread(
+        mut jump_table: JumpTable,
+        pending_web_worker_count: u32
+    ) -> Result<(WasmMultiThreadedHotPatchApplier, Module), PatchError> {
+        WasmMultiThreadedHotPatchApplier::apply_offset_to_function_indices(&mut jump_table);
+
+        let applier = WasmMultiThreadedHotPatchApplier {
+            jump_table,
+            pending_web_worker_count: AtomicU32::new(pending_web_worker_count)
+        };
+
+        todo!()
+    }
+
+    fn apply_offset_to_function_indices(jump_table: &mut JumpTable) {
+        let funcs: Table = wasm_bindgen::function_table().unchecked_into();
+
+        let table_base = funcs.length();
+
+        for v in jump_table.map.values_mut() {
+            *v += table_base as u64;
+        }
+    }
+
+    pub unsafe fn dynamic_link_in_current_thread(&self) {
+        todo!()
+    }
+
+    unsafe fn apply_change_to_jump_table(&self) {
+        unsafe { subsecond::commit_patch(self.jump_table.clone()) };
+    }
+
+    pub unsafe fn on_new_web_worker_initialize(&self) -> Result<(), PatchError> {
+        todo!()
+    }
 }
 
 pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), PatchError> {

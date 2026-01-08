@@ -63,6 +63,8 @@ dx serve --hot-patch --target wasm32-unknown-unknown --bundle web "--cargo-args=
 
 ### How to run it without dx
 
+(Maybe that's no longer working, TODO check)
+
 Go into `wasm_mt_hotswap_example` folder
 
 ```
