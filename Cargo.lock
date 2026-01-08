@@ -786,6 +786,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "leb128"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "884e2677b40cc8c339eaefcb701c32ef1fd2493d71118dc0ca4b6a736c93bd67"
+
+[[package]]
 name = "libc"
 version = "0.2.177"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1833,11 +1839,13 @@ dependencies = [
 name = "wasm_mt_hotswap_example"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "console_error_panic_hook",
  "dioxus-cli-config 0.7.1",
  "dioxus-devtools 0.7.2",
  "futures-channel-preview",
  "js-sys",
+ "leb128",
  "manganis",
  "rayon",
  "rayon-core",

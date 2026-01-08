@@ -1,14 +1,15 @@
+use anyhow::{bail, Context};
 use dioxus_devtools::DevserverMsg;
 use futures_channel::oneshot;
 use js_sys::WebAssembly::Module;
-use js_sys::{JsString, Reflect};
+use js_sys::{ArrayBuffer, JsString, Reflect, Uint8Array};
 use js_sys::{
     Object, Promise, SharedArrayBuffer, Uint8ClampedArray,
     WebAssembly::{self, Memory, Table},
 };
 use manganis::{asset, Asset};
 use rayon::prelude::*;
-use std::mem;
+use std::{io, mem};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 use std::sync::{Arc, RwLock};
@@ -273,13 +274,13 @@ pub struct WasmMultiThreadedHotPatchApplier {
 impl WasmMultiThreadedHotPatchApplier {
     pub fn prepare_and_dynamic_link_current_thread(
         mut jump_table: JumpTable,
-        pending_web_worker_count: u32
+        pending_web_worker_count: u32,
     ) -> Result<(WasmMultiThreadedHotPatchApplier, Module), PatchError> {
         WasmMultiThreadedHotPatchApplier::apply_offset_to_function_indices(&mut jump_table);
 
         let applier = WasmMultiThreadedHotPatchApplier {
             jump_table,
-            pending_web_worker_count: AtomicU32::new(pending_web_worker_count)
+            pending_web_worker_count: AtomicU32::new(pending_web_worker_count),
         };
 
         todo!()
@@ -360,14 +361,22 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
         //
         // Make sure we align the memory base to the page size
         // TODO it seems grows too much. only need to grow as size of data section
-        const PAGE_SIZE: u32 = 64 * 1024;
-        let page_count = (buffer.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32;
-        let memory_base = (page_count + 1) * PAGE_SIZE;
 
-        memory.grow((dl_bytes.byte_length() as f64 / PAGE_SIZE as f64).ceil() as u32 + 1);
 
         let module_promise = WebAssembly::compile(dl_bytes.dyn_ref().expect("casting for compile"));
-        let module = JsFuture::from(module_promise).await.unwrap();
+        let module: Module = JsFuture::from(module_promise)
+            .await
+            .expect("await on module promise")
+            .into();
+
+        let dylink_section_info = parse_dylink_section(&module);
+
+        const PAGE_SIZE: u32 = 64 * 1024;
+        let page_count = dylink_section_info.mem_info.memory_size.div_ceil(PAGE_SIZE);
+        let memory_base = (page_count + 1) * PAGE_SIZE;
+
+        memory.grow(page_count);
+
 
         let table_base = funcs.length();
 
@@ -375,13 +384,7 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
             *v += table_base as u64;
         }
 
-        do_per_thread_hotpatch(
-            table_base,
-            &jump_table,
-            &module.clone().unchecked_into::<Module>(),
-            memory_base,
-        )
-        .await;
+        do_per_thread_hotpatch(table_base, &jump_table, &module.clone(), memory_base).await;
 
         let web_worker_num = pool_get_web_worker_num();
         let mut hotpatch_state = HOTPATCH_STATE.try_write().expect("cannot lock");
@@ -430,12 +433,126 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
                     }
                 });
             }),
-            module,
+            module.into(),
         )
         .unwrap();
     });
 
     Ok(())
+}
+
+pub struct DylinkMemInfo {
+    memory_size: u32,
+    memory_alignment: u32,
+    table_size: u32,
+    table_alignment: u32,
+}
+
+pub struct DylinkSectionInfo {
+    mem_info: DylinkMemInfo,
+}
+
+pub struct DylinkSectionParser<'a> {
+    buffer: &'a [u8],
+    position: usize,
+}
+
+impl<'a> DylinkSectionParser<'a> {
+    pub fn new(buffer: &[u8], position: usize) -> DylinkSectionParser {
+        DylinkSectionParser { buffer, position }
+    }
+
+    // copied from wasmparser
+    // cannot use leb1288 https://docs.rs/leb128/latest/leb128/index.html because it's not no-std
+    // not directly using wasmparser to reduce debug binary size
+
+    pub fn eof(&self) -> bool {
+        self.position >= self.buffer.len()
+    }
+
+    pub fn read_u8(&mut self) -> anyhow::Result<u8> {
+        let b = match self.buffer.get(self.position) {
+            Some(b) => *b,
+            None => bail!("EOF"),
+        };
+        self.position += 1;
+        Ok(b)
+    }
+
+    pub fn read_var_u32(&mut self) -> anyhow::Result<u32> {
+        // Optimization for single byte i32.
+        let byte = self.read_u8()?;
+        if (byte & 0x80) == 0 {
+            Ok(u32::from(byte))
+        } else {
+            self.read_var_u32_big(byte)
+        }
+    }
+
+    fn read_var_u32_big(&mut self, byte: u8) -> anyhow::Result<u32> {
+        let mut result = (byte & 0x7F) as u32;
+        let mut shift = 7;
+        loop {
+            let byte = self.read_u8()?;
+            result |= ((byte & 0x7F) as u32) << shift;
+            if shift >= 25 && (byte >> (32 - shift)) != 0 {
+                let msg = if byte & 0x80 != 0 {
+                    "invalid var_u32: integer representation too long"
+                } else {
+                    "invalid var_u32: integer too large"
+                };
+                bail!(msg)
+            }
+            shift += 7;
+            if (byte & 0x80) == 0 {
+                break;
+            }
+        }
+        Ok(result)
+    }
+
+    // https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md#the-dylink0-section
+    fn read_dylink_section(&mut self) -> anyhow::Result<DylinkSectionInfo> {
+        let mut memory_info: Option<DylinkMemInfo> = None;
+        loop {
+            if self.eof() {
+                break;
+            }
+            let sub_section_type = self.read_u8()?;
+            match sub_section_type {
+                1 => {
+                    memory_info = Some(DylinkMemInfo {
+                        memory_size: self.read_var_u32()?,
+                        memory_alignment: self.read_var_u32()?,
+                        table_size: self.read_var_u32()?,
+                        table_alignment: self.read_var_u32()?,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Ok(DylinkSectionInfo {
+            mem_info: memory_info.context("No memory info")?,
+        })
+    }
+}
+
+fn parse_dylink_section(module: &Module) -> DylinkSectionInfo {
+    let dylink_section_arr = WebAssembly::Module::custom_sections(&module, "dylink.0");
+    if dylink_section_arr.length() == 0 {
+        panic!("The hotpatch WASM binary doesn't have dylink.0 custom section")
+    }
+    let dylink_section: ArrayBuffer = dylink_section_arr.get(0).into();
+    let dylink_section = Uint8Array::new(&dylink_section);
+    let mut dylink_bytes = vec![0u8; dylink_section.length() as usize];
+    dylink_section.copy_to(&mut dylink_bytes);
+
+    let mut parser = DylinkSectionParser::new(&dylink_bytes, 0);
+
+    parser
+        .read_dylink_section()
+        .expect("Cannot parse dylink section")
 }
 
 pub async fn do_per_thread_hotpatch(
