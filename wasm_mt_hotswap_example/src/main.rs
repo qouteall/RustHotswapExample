@@ -17,7 +17,7 @@ use std::sync::{Arc, RwLock};
 use subsecond::{JumpTable, PatchError};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{console, ImageData};
+use web_sys::{console, ImageData, Window, WorkerGlobalScope};
 use web_sys::{MessageEvent, WebSocket};
 
 use crate::pool::{broadcast_to_workers, pool_get_web_worker_num, submit_to_pool};
@@ -421,7 +421,11 @@ impl WasmMultiThreadedHotPatchApplier {
             let descriptor = Object::new();
             Reflect::set(&descriptor, &"value".into(), &"i32".into()).expect("setting descriptor");
             Reflect::set(&descriptor, &"mutable".into(), &false.into()).expect("setting descriptor2");
-            let value = WebAssembly::Global::new(&descriptor, &value.into()).expect("new global");
+
+            // convert to i32 as the global is i32 in wasm
+            let value_i32 = value as i32;
+
+            let value = WebAssembly::Global::new(&descriptor, &value_i32.into()).expect("new global");
             Reflect::set(&env, &name.into(), &value.into()).expect("setting env global");
         }
 
@@ -561,8 +565,15 @@ async fn load_wasm_module(jump_table: &JumpTable) -> Module {
         panic!("The binary path in hotpatch message doesn't end with .wasm");
     }
 
-    // Start the fetch of the module
-    let response: Promise = web_sys::window().unwrap_throw().fetch_with_str(&path);
+    // fetch the module. use `fetch()` which exists both in main thread and web workers
+    let global = js_sys::global();
+    let response: Promise = if let Ok(window) = global.clone().dyn_into::<Window>() {
+        window.fetch_with_str(&path)
+    } else if let Ok(worker_global_scope) = global.dyn_into::<WorkerGlobalScope>() {
+        worker_global_scope.fetch_with_str(&path)
+    } else {
+        panic!("globalThis is neither Window or WorkerGlobalScope")
+    };
 
     // use compileStreaming instead of compile to enable caching https://v8.dev/blog/wasm-code-caching
     let module_promise = WebAssembly::compile_streaming(&response);
