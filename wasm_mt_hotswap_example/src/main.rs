@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use std::{io, mem};
 use std::io::Read;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use subsecond::{JumpTable, PatchError};
 use wasm_bindgen::prelude::*;
@@ -270,44 +270,177 @@ pub struct WasmMultiThreadedHotPatchApplier {
     jump_table: JumpTable,
     table_base: u64,
     memory_base: u64,
-    pending_web_worker_count: AtomicU32,
+    pending_web_worker_count: AtomicI32,
 }
 
-pub unsafe  fn wasm_multi_threaded_hotpatch_apply_begin(
+pub async unsafe fn wasm_multi_threaded_hotpatch_apply_begin(
     mut jump_table: JumpTable,
     pending_web_worker_count: u32,
 ) -> Result<(WasmMultiThreadedHotPatchApplier, Module), PatchError> {
-
     let funcs: Table = wasm_bindgen::function_table().unchecked_into();
-
     let table_base = funcs.length();
 
+    // the function addresses are relative. add them with table base to become absolute
+    // in Wasm, function address means offset into function table
     for v in jump_table.map.values_mut() {
         *v += table_base as u64;
     }
 
+    let module = load_wasm_module(&mut jump_table).await;
+
+    let dylink_section_info = parse_dylink_section(&module).expect("Cannot parse dylink.0 section");
+
+    console_log!("Patch binary data size {}", dylink_section_info.mem_info.memory_size);
+
+    const PAGE_SIZE: u32 = 64 * 1024;
+    let page_count = dylink_section_info.mem_info.memory_size.div_ceil(PAGE_SIZE);
+    let memory_base = (page_count + 1) * PAGE_SIZE;
+
+    let memory: Memory = wasm_bindgen::memory().unchecked_into();
+    memory.grow(page_count);
+
     let applier = WasmMultiThreadedHotPatchApplier {
         jump_table,
         table_base: table_base as u64,
-        memory_base: 0,
-        pending_web_worker_count: AtomicU32::new(pending_web_worker_count),
+        memory_base: memory_base as u64,
+        pending_web_worker_count: AtomicI32::new(pending_web_worker_count as i32),
     };
 
-    todo!()
+    applier.internal_per_thread_hotpatch(&module).await;
+
+    Ok((applier, module))
 }
 
 #[cfg(target_arch = "wasm32")]
 impl WasmMultiThreadedHotPatchApplier {
-    pub unsafe fn dynamic_link_in_web_worker(&self) {
-        todo!()
+    pub async unsafe fn dynamic_link_in_existing_web_worker(&self) -> Result<(Module, bool), PatchError> {
+        // each web worker will repeatedly fetch and compile Wasm module
+        // V8 has a caching mechanism so it will probably not waste performance
+        // https://v8.dev/blog/wasm-code-caching
+        let module = load_wasm_module(&self.jump_table).await;
+
+        self.internal_per_thread_hotpatch(&module).await;
+
+        let prev_pending_web_worker_num = self.pending_web_worker_count.fetch_sub(1, Ordering::SeqCst);
+
+        if prev_pending_web_worker_num < 1 {
+            panic!("`dynamic_link_in_existing_web_worker` called too many times.")
+        }
+
+        let done = if prev_pending_web_worker_num == 1 {
+            self.apply_change_to_jump_table();
+
+            true
+        } else {
+            false
+        };
+
+        Ok((module, done))
     }
 
     unsafe fn apply_change_to_jump_table(&self) {
         unsafe { subsecond::commit_patch(self.jump_table.clone()) };
     }
 
-    pub unsafe fn on_new_web_worker_initialize(&self) -> Result<(), PatchError> {
-        todo!()
+    pub async unsafe fn on_new_web_worker_initialize(&self) -> Result<Module, PatchError> {
+        let module = load_wasm_module(&self.jump_table).await;
+
+        self.internal_per_thread_hotpatch(&module).await;
+
+        Ok(module)
+    }
+
+    async fn internal_per_thread_hotpatch(&self, wasm_module: &Module) {
+        let funcs: Table = wasm_bindgen::function_table().into();
+        let exports: Object = wasm_bindgen::exports().into();
+
+        let old_table_size = funcs.length();
+        assert_eq!(
+            old_table_size as u64,
+            self.table_base,
+            "The current threads' table size doesn't correspond to table_base. \
+            Maybe due to \
+            1. some race condition related to spawning new web worker during hotpatch\
+            2. unexpectedly doing multiple hotpatches concurrently\
+            3. new web worker doesn't do dynamic linking to previous patches correctly\
+            4. other possible errors"
+        );
+
+        // We grow the ifunc table to accommodate the new functions
+        // In theory we could just put all the ifuncs in the jump map and use that for our count,
+        // but there's no guarantee from the jump table that it references "itself"
+        // We might need a sentinel value for each ifunc in the jump map to indicate that it is
+        funcs
+            .grow(self.jump_table.ifunc_count as u32)
+            .expect("growing table");
+
+        // Build up the import object. We copy everything over from the current exports, but then
+        // need to add in the memory and table base offsets for the relocations to work.
+        //
+        // let imports = {
+        //     env: {
+        //         memory: base.memory,
+        //         __tls_base: base.__tls_base,
+        //         __stack_pointer: base.__stack_pointer,
+        //         __indirect_function_table: base.__indirect_function_table,
+        //         __memory_base: memory_base,
+        //         __table_base: table_base,
+        //        ..base_exports
+        //     },
+        // };
+        let env = Object::new();
+
+        // Move memory, __tls_base, __stack_pointer, __indirect_function_table, and all exports over
+        for key in Object::keys(&exports) {
+            Reflect::set(
+                &env,
+                &key,
+                &Reflect::get(&exports, &key).expect("getting field from exports"),
+            )
+                .expect("setting env");
+        }
+
+        // Set the memory and table in the imports
+        // Following this pattern: Global.new({ value: "i32", mutable: false }, value)
+        for (name, value) in [("__table_base", self.table_base), ("__memory_base", self.memory_base)] {
+            let descriptor = Object::new();
+            Reflect::set(&descriptor, &"value".into(), &"i32".into()).expect("setting descriptor");
+            Reflect::set(&descriptor, &"mutable".into(), &false.into()).expect("setting descriptor2");
+            let value = WebAssembly::Global::new(&descriptor, &value.into()).expect("new global");
+            Reflect::set(&env, &name.into(), &value.into()).expect("setting env global");
+        }
+
+        // Set the memory and table in the imports
+        let imports = Object::new();
+        Reflect::set(&imports, &"env".into(), &env).expect("setting env into imports");
+
+        let instance = JsFuture::from(WebAssembly::instantiate_module(wasm_module, &imports))
+            .await
+            .expect("instantiating module");
+
+        console::log_2(&"result instance".into(), &instance);
+
+        let exports: Object = Reflect::get(&instance, &"exports".into())
+            .expect("getting exports")
+            .unchecked_into();
+
+        // https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md#relocations
+        _ = Reflect::get(&exports, &"__wasm_apply_data_relocs".into())
+            .unwrap()
+            .unchecked_into::<js_sys::Function>()
+            .call0(&JsValue::undefined());
+        _ = Reflect::get(&exports, &"__wasm_apply_global_relocs".into())
+            .unwrap()
+            .unchecked_into::<js_sys::Function>()
+            .call0(&JsValue::undefined());
+
+        // https://github.com/WebAssembly/tool-conventions/blob/main/Linking.md#start-section
+        _ = Reflect::get(&exports, &"__wasm_call_ctors".into())
+            .unwrap()
+            .unchecked_into::<js_sys::Function>()
+            .call0(&JsValue::undefined());
+
+        // TODO check whether __wasm_init_memory is called
     }
 }
 
@@ -327,24 +460,7 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
         let exports: Object = wasm_bindgen::exports().unchecked_into();
         let buffer: SharedArrayBuffer = memory.buffer().unchecked_into();
 
-        let path = jump_table.lib.to_str().unwrap();
-
-        web_sys::console::info_1(&format!("Going to load wasm binary: {:?}", path).into());
-
-        if !path.ends_with(".wasm") {
-            web_sys::console::error_1(&"doesn't end with .wasm, ignore".into());
-            return;
-        }
-
-        // Start the fetch of the module
-        let response: Promise = web_sys::window().unwrap_throw().fetch_with_str(&path);
-
-        let module_promise = WebAssembly::compile_streaming(&response);
-
-        let module: Module = JsFuture::from(module_promise)
-            .await
-            .expect("await on module promise")
-            .into();
+        let module = load_wasm_module(&mut jump_table).await;
 
         let dylink_section_info = parse_dylink_section(&module).expect("Cannot parse dylink.0 section");
 
@@ -418,6 +534,29 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
     });
 
     Ok(())
+}
+
+async fn load_wasm_module(jump_table: &JumpTable) -> Module {
+    let path = jump_table.lib.to_str().unwrap();
+
+    web_sys::console::info_1(&format!("Going to load wasm binary: {:?}", path).into());
+
+    if !path.ends_with(".wasm") {
+        panic!("The binary path in hotpatch message doesn't end with .wasm");
+    }
+
+    // Start the fetch of the module
+    let response: Promise = web_sys::window().unwrap_throw().fetch_with_str(&path);
+
+    // use compileStreaming instead of compile to enable caching https://v8.dev/blog/wasm-code-caching
+    let module_promise = WebAssembly::compile_streaming(&response);
+
+    let module: Module = JsFuture::from(module_promise)
+        .await
+        .expect("WebAssembly.compileStreaming error")
+        .into();
+
+    module
 }
 
 pub struct DylinkMemInfo {
