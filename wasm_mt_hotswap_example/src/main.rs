@@ -350,7 +350,7 @@ impl WasmMultiThreadedHotPatchApplier {
         Ok(module)
     }
 
-    async fn internal_per_thread_hotpatch(&self, wasm_module: &Module) {
+    async unsafe fn internal_per_thread_hotpatch(&self, wasm_module: &Module) {
         let funcs: Table = wasm_bindgen::function_table().into();
         let exports: Object = wasm_bindgen::exports().into();
 
