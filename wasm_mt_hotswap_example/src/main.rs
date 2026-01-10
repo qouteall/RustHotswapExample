@@ -268,36 +268,37 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
 #[cfg(target_arch = "wasm32")]
 pub struct WasmMultiThreadedHotPatchApplier {
     jump_table: JumpTable,
+    table_base: u64,
+    memory_base: u64,
     pending_web_worker_count: AtomicU32,
+}
+
+pub unsafe  fn wasm_multi_threaded_hotpatch_apply_begin(
+    mut jump_table: JumpTable,
+    pending_web_worker_count: u32,
+) -> Result<(WasmMultiThreadedHotPatchApplier, Module), PatchError> {
+
+    let funcs: Table = wasm_bindgen::function_table().unchecked_into();
+
+    let table_base = funcs.length();
+
+    for v in jump_table.map.values_mut() {
+        *v += table_base as u64;
+    }
+
+    let applier = WasmMultiThreadedHotPatchApplier {
+        jump_table,
+        table_base: table_base as u64,
+        memory_base: 0,
+        pending_web_worker_count: AtomicU32::new(pending_web_worker_count),
+    };
+
+    todo!()
 }
 
 #[cfg(target_arch = "wasm32")]
 impl WasmMultiThreadedHotPatchApplier {
-    pub fn prepare_and_dynamic_link_current_thread(
-        mut jump_table: JumpTable,
-        pending_web_worker_count: u32,
-    ) -> Result<(WasmMultiThreadedHotPatchApplier, Module), PatchError> {
-        WasmMultiThreadedHotPatchApplier::apply_offset_to_function_indices(&mut jump_table);
-
-        let applier = WasmMultiThreadedHotPatchApplier {
-            jump_table,
-            pending_web_worker_count: AtomicU32::new(pending_web_worker_count),
-        };
-
-        todo!()
-    }
-
-    fn apply_offset_to_function_indices(jump_table: &mut JumpTable) {
-        let funcs: Table = wasm_bindgen::function_table().unchecked_into();
-
-        let table_base = funcs.length();
-
-        for v in jump_table.map.values_mut() {
-            *v += table_base as u64;
-        }
-    }
-
-    pub unsafe fn dynamic_link_in_current_thread(&self) {
+    pub unsafe fn dynamic_link_in_web_worker(&self) {
         todo!()
     }
 
@@ -338,33 +339,8 @@ pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), Patch
         // Start the fetch of the module
         let response: Promise = web_sys::window().unwrap_throw().fetch_with_str(&path);
 
-        // Wait for the fetch to complete - we need the wasm module size in bytes to reserve in the memory
-        let response: web_sys::Response = JsFuture::from(response).await.unwrap().into();
+        let module_promise = WebAssembly::compile_streaming(&response);
 
-        // If the status is not success, we bail
-        if !response.ok() {
-            panic!(
-                "Failed to patch wasm module at {} - response failed with: {}",
-                path,
-                response.status_text()
-            );
-        }
-
-        let dl_bytes: ArrayBuffer = JsFuture::from(response.array_buffer().unwrap())
-            .await
-            .unwrap()
-            .into();
-
-        // Expand the memory and table size to accommodate the new data and functions
-        //
-        // Normally we wouldn't be able to trust that we are allocating *enough* memory
-        // for BSS segments, but ld emits them in the binary when using import-memory.
-        //
-        // Make sure we align the memory base to the page size
-        // TODO it seems grows too much. only need to grow as size of data section
-
-
-        let module_promise = WebAssembly::compile(dl_bytes.dyn_ref().expect("casting for compile"));
         let module: Module = JsFuture::from(module_promise)
             .await
             .expect("await on module promise")
