@@ -21,8 +21,9 @@ js-sys = "0.3.83"
 wasm-bindgen = "0.2.106"
 wasm-bindgen-futures = "0.4.56"
 
-subsecond = { git = "https://github.com/qouteall/dioxus", branch = "wasm_mt_4" }
-dioxus-cli-config = { version = "0.7.1", features = ["web"] }
+# update: cargo update -p subsecond@0.7.2
+subsecond = { git = "https://github.com/qouteall/dioxus", branch = "wasm_mt_4", features = ["experimental_wasm_multithreading_support"] }
+dioxus-cli-config = { git = "https://github.com/qouteall/dioxus", branch = "wasm_mt_4", features = ["web"] }
 dioxus-devtools = { git = "https://github.com/qouteall/dioxus", branch = "wasm_mt_4" }
 manganis = { git = "https://github.com/qouteall/dioxus", branch = "wasm_mt_4" }
 anyhow = "1.0.100"

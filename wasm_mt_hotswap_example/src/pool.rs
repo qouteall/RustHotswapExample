@@ -256,11 +256,21 @@ pub fn pool_get_web_worker_num() -> usize {
 }
 
 pub fn broadcast_to_workers(
-    f: Arc<dyn Fn(JsValue) + Send + Sync>,
+    f: impl Fn() + Send + Sync + 'static
+) -> Result<(), JsValue> {
+    broadcast_to_workers_with_js(move |_| {
+        f()
+    }, JsValue::undefined())
+}
+
+pub fn broadcast_to_workers_with_js(
+    f: impl Fn(JsValue) + Send + Sync + 'static,
     js_payload: JsValue,
 ) -> Result<(), JsValue> {
-    with_worker_pool(|pool| {
-        pool.broadcast(f, js_payload)
+    let arcf: Arc<dyn Fn(JsValue) + Send + Sync> = Arc::new(f);
+
+    with_worker_pool(move |pool| {
+        pool.broadcast(arcf, js_payload)
     })
 }
 
