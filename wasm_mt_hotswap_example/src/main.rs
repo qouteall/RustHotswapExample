@@ -182,9 +182,7 @@ fn image_data(base: usize, len: usize, width: u32, height: u32) -> ImageData {
 pub fn start() {
     console_error_panic_hook::set_once();
 
-    init_hotpatch(Box::new(|| {
-        console::log_1(&"Hotpatched".into());
-    }));
+    init_hotpatch();
 
     console::log_1(&"Hello world from Rust WASM!".into());
 }
@@ -196,7 +194,7 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
 
 // https://github.com/DioxusLabs/dioxus/blob/main/packages/web/src/devtools.rs
 #[cfg(debug_assertions)]
-fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
+fn init_hotpatch() {
     web_sys::console::info_1(&format!("Initializing hotpatch").into());
 
     // Get the location of the devserver, using the current location plus the /_dioxus path
@@ -228,11 +226,28 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
             match serde_json::from_str::<DevserverMsg>(string) {
                 Ok(DevserverMsg::HotReload(hr)) => {
                     if let Some(jumptable) = hr.clone().jump_table {
-                        unsafe {
-                            wasm_mt_apply_patch(jumptable);
-                        }
+                        wasm_bindgen_futures::spawn_local(async move {
+                            unsafe {
+                                let (applier, module) =
+                                    wasm_multi_threaded_hotpatch_apply_begin(
+                                        jumptable,
+                                        pool_get_web_worker_num() as u32,
+                                    ).await.unwrap();
 
-                        on_hotpatch_callback();
+                                let applier = Arc::new(applier);
+
+                                broadcast_to_workers(
+                                    Arc::new(move |_| {
+                                        let applier2 = applier.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            applier2.dynamic_link_in_existing_web_worker().await.unwrap();
+                                        });
+                                    }),
+                                    JsValue::undefined()
+                                )
+                                    .unwrap();
+                            }
+                        });
                     }
                 }
 
@@ -257,14 +272,6 @@ fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
     console::log_1(&"Hotpatch initialized".into());
 }
 
-/// In WebAssembly multi-threading, applying patch cannot be done in one-shot function call.
-/// Because currently the Wasm function table cannot be shared across threads.
-/// Any dynamic linking requires each thread to cooperatively create new WebAssembly instance,
-/// and apply changes to their own function table.
-/// We must change global jump table after all threads have dynamically linked it.
-///
-/// One-shot hotpatch in Wasm multithreading is possible after shared-everything-threads proposal,
-/// which is still in early stage. https://github.com/WebAssembly/shared-everything-threads
 #[cfg(target_arch = "wasm32")]
 pub struct WasmMultiThreadedHotPatchApplier {
     jump_table: JumpTable,
@@ -273,6 +280,14 @@ pub struct WasmMultiThreadedHotPatchApplier {
     pending_web_worker_count: AtomicI32,
 }
 
+/// In WebAssembly multi-threading, applying patch cannot be done in one-shot function call.
+/// Because currently the Wasm function table cannot be shared across threads.
+/// Any dynamic linking requires each thread to cooperatively create new WebAssembly instance,
+/// and apply changes to their own function table.
+/// We must only change global jump table after all threads have dynamically linked the new code.
+///
+/// One-shot hotpatch in Wasm multithreading is possible after shared-everything-threads proposal,
+/// which is still in early stage. https://github.com/WebAssembly/shared-everything-threads
 pub async unsafe fn wasm_multi_threaded_hotpatch_apply_begin(
     mut jump_table: JumpTable,
     pending_web_worker_count: u32,
@@ -306,7 +321,7 @@ pub async unsafe fn wasm_multi_threaded_hotpatch_apply_begin(
         pending_web_worker_count: AtomicI32::new(pending_web_worker_count as i32),
     };
 
-    applier.internal_per_thread_hotpatch(&module).await;
+    applier.internal_per_thread_dynamic_link(&module).await;
 
     Ok((applier, module))
 }
@@ -319,7 +334,7 @@ impl WasmMultiThreadedHotPatchApplier {
         // https://v8.dev/blog/wasm-code-caching
         let module = load_wasm_module(&self.jump_table).await;
 
-        self.internal_per_thread_hotpatch(&module).await;
+        self.internal_per_thread_dynamic_link(&module).await;
 
         let prev_pending_web_worker_num = self.pending_web_worker_count.fetch_sub(1, Ordering::SeqCst);
 
@@ -345,12 +360,12 @@ impl WasmMultiThreadedHotPatchApplier {
     pub async unsafe fn on_new_web_worker_initialize(&self) -> Result<Module, PatchError> {
         let module = load_wasm_module(&self.jump_table).await;
 
-        self.internal_per_thread_hotpatch(&module).await;
+        self.internal_per_thread_dynamic_link(&module).await;
 
         Ok(module)
     }
 
-    async unsafe fn internal_per_thread_hotpatch(&self, wasm_module: &Module) {
+    async unsafe fn internal_per_thread_dynamic_link(&self, wasm_module: &Module) {
         let funcs: Table = wasm_bindgen::function_table().into();
         let exports: Object = wasm_bindgen::exports().into();
 
@@ -444,6 +459,7 @@ impl WasmMultiThreadedHotPatchApplier {
     }
 }
 
+#[deprecated]
 pub unsafe fn wasm_mt_apply_patch(mut jump_table: JumpTable) -> Result<(), PatchError> {
     wasm_bindgen_futures::spawn_local(async move {
         use js_sys::{

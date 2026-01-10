@@ -257,7 +257,7 @@ pub fn pool_get_web_worker_num() -> usize {
 
 pub fn broadcast_to_workers(
     f: Arc<dyn Fn(JsValue) + Send + Sync>,
-        js_payload: JsValue,
+    js_payload: JsValue,
 ) -> Result<(), JsValue> {
     with_worker_pool(|pool| {
         pool.broadcast(f, js_payload)
