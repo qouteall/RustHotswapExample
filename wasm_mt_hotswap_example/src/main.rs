@@ -186,6 +186,29 @@ pub fn start() {
     init_hotpatch();
 
     console::log_1(&"Hello world from Rust WASM!".into());
+
+    let window = web_sys::window().expect("no window");
+    let document = window.document().expect("no document");
+
+    let button = document
+        .get_element_by_id("testbutton")
+        .expect("no testbutton");
+
+    let closure = Closure::<dyn FnMut()>::new(move || {
+        subsecond::call(|| {
+            console_log!("Test patch data segment")
+        })
+    });
+
+    button
+        .add_event_listener_with_callback("click", closure.as_ref().unchecked_ref())
+        .expect("cannot add listener");
+
+    Reflect::set(
+        &button, &"disabled".into(), &false.into()
+    );
+
+    closure.forget();
 }
 
 #[cfg(not(debug_assertions))]
