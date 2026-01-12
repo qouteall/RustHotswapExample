@@ -9,19 +9,20 @@ use js_sys::{
 };
 use manganis::{asset, Asset};
 use rayon::prelude::*;
-use std::{io, mem};
 use std::io::Read;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
+use std::{io, mem};
 use subsecond::{JumpTable, PatchError};
-use subsecond::wasm_multithreading::WasmMultiThreadedHotPatchApplier;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{console, ImageData, Window, WorkerGlobalScope};
 use web_sys::{MessageEvent, WebSocket};
 
-use crate::pool::{broadcast_to_workers, broadcast_to_workers_with_js, pool_get_web_worker_num, submit_to_pool};
+use crate::pool::{
+    broadcast_to_workers, broadcast_to_workers_with_js, pool_get_web_worker_num, submit_to_pool,
+};
 
 static TEST_CSS_ASSET: Asset = asset!("/assets/test.css");
 
@@ -180,8 +181,10 @@ fn image_data(base: usize, len: usize, width: u32, height: u32) -> ImageData {
 }
 
 #[wasm_bindgen(start)]
-pub fn start() {
+pub async fn start() {
     console_error_panic_hook::set_once();
+
+    subsecond::wasm_multithreading::init_hotpatch_for_current_thread().await;
 
     init_hotpatch();
 
@@ -195,18 +198,14 @@ pub fn start() {
         .expect("no testbutton");
 
     let closure = Closure::<dyn FnMut()>::new(move || {
-        subsecond::call(|| {
-            console_log!("Test patch data segment")
-        })
+        subsecond::call(|| console_log!("Test patch data segment"))
     });
 
     button
         .add_event_listener_with_callback("click", closure.as_ref().unchecked_ref())
         .expect("cannot add listener");
 
-    Reflect::set(
-        &button, &"disabled".into(), &false.into()
-    );
+    Reflect::set(&button, &"disabled".into(), &false.into());
 
     closure.forget();
 }
@@ -250,24 +249,9 @@ fn init_hotpatch() {
             match serde_json::from_str::<DevserverMsg>(string) {
                 Ok(DevserverMsg::HotReload(hr)) => {
                     if let Some(jumptable) = hr.clone().jump_table {
-                        wasm_bindgen_futures::spawn_local(async move {
-                            unsafe {
-                                let (applier, module): (WasmMultiThreadedHotPatchApplier, Module) =
-                                    subsecond::wasm_multithreading::wasm_multithreaded_hotpatch_apply_begin(
-                                        jumptable,
-                                        pool_get_web_worker_num() as u32,
-                                    ).await.unwrap();
-
-                                let applier = Arc::new(applier);
-
-                                broadcast_to_workers(move || {
-                                    let applier = applier.clone();
-                                    wasm_bindgen_futures::spawn_local(async move {
-                                        applier.dynamic_link_in_existing_web_worker().await.unwrap();
-                                    });
-                                }).unwrap();
-                            }
-                        });
+                        unsafe {
+                            subsecond::apply_patch(jumptable);
+                        }
                     }
                 }
 
