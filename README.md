@@ -23,7 +23,7 @@ Command:
 dx serve --hot-patch --package wasm_hotswap_example --target wasm32-unknown-unknown --bundle web
 ```
 
-On Windows, it currently cannot build due to a bug in Dioxus CLI. Fixed in [this PR](https://github.com/DioxusLabs/dioxus/pull/5010) (not yet merged).
+On Windows, it currently cannot build due to a bug in Dioxus CLI. Fixed in [this PR](https://github.com/DioxusLabs/dioxus/pull/5010).
 
 The `index.html` will be used by Dioxus CLI for serving web page.
 
@@ -49,7 +49,7 @@ Note that it will restart internal axum server after hotswap. It cannot keep lon
 
 Changed from this example https://github.com/wasm-bindgen/wasm-bindgen/tree/main/examples/raytrace-parallel
 
-It requires my fork of dioxus test_wasm_mt2 branch https://github.com/qouteall/dioxus/tree/test_wasm_mt2 (it's hacky, also I temporarily commented out some bundling code)
+It requires my fork of dioxus test_wasm_mt2 branch https://github.com/qouteall/dioxus/tree/wasm_mt_4
 
 It uses nightly Rust (currently wasm multithreading requires nightly Rust).
 
