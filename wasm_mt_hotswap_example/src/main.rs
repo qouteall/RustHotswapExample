@@ -216,8 +216,6 @@ pub async fn start() {
 
         broadcast_to_workers(|| {
             subsecond::call(|| {
-                console_log!("Before accessing TLS");
-
                 let thread_id = MY_THREAD_ID.with(|s| *s);
 
                 console_log!("Worker {}: Test patch data segment", thread_id);
