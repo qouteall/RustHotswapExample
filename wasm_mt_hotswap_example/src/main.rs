@@ -201,11 +201,17 @@ pub async fn start() {
         subsecond::call(|| {
             console_log!("Test patch data segment");
 
-            // Not yet working because TLS resets so worker pool resets
-            broadcast_to_workers(|| {
+            // // Not yet working because TLS resets so worker pool resets
+            // broadcast_to_workers(|| {
+            //     console_log!("Test patch data segment in worker");
+            // });
+        });
+
+        broadcast_to_workers(|| {
+            subsecond::call(|| {
                 console_log!("Test patch data segment in worker");
             });
-        })
+        });
     });
 
     button
