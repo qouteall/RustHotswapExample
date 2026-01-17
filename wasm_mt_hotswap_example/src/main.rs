@@ -117,11 +117,15 @@ impl Scene {
                             let y = i / width;
                             let ray = raytracer::Ray::create_prime(x, y, &scene);
                             let result = raytracer::cast_ray(&scene, &ray, 0).to_rgba();
-                            // chunk[0] = result.data[0];
-                            chunk[0] = 255u8;
+                            chunk[0] = result.data[0];
+                            // chunk[0] = 255u8;
                             chunk[1] = result.data[1];
                             chunk[2] = result.data[2];
                             chunk[3] = result.data[3];
+
+                            // if MY_THREAD_ID.with(|s|*s) % 8 == 0 {
+                            //     chunk[0] = 255u8;
+                            // }
                         });
                 })
             });

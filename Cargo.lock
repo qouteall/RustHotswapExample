@@ -174,7 +174,7 @@ dependencies = [
 [[package]]
 name = "const-serialize"
 version = "0.8.0"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "const-serialize 0.7.2",
  "const-serialize-macro 0.8.0-alpha.0",
@@ -195,7 +195,7 @@ dependencies = [
 [[package]]
 name = "const-serialize-macro"
 version = "0.8.0-alpha.0"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -313,7 +313,7 @@ dependencies = [
 [[package]]
 name = "dioxus-cli-config"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "wasm-bindgen",
 ]
@@ -344,7 +344,7 @@ dependencies = [
 [[package]]
 name = "dioxus-core"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "anyhow",
  "const_format",
@@ -371,7 +371,7 @@ checksum = "36f5ecf5a51de06d78aded3b5f7516a258f53117cba718bc5706317a3c04c844"
 [[package]]
 name = "dioxus-core-types"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 
 [[package]]
 name = "dioxus-devtools"
@@ -397,7 +397,7 @@ dependencies = [
 [[package]]
 name = "dioxus-devtools"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "dioxus-cli-config 0.7.2",
  "dioxus-core 0.7.2",
@@ -425,7 +425,7 @@ dependencies = [
 [[package]]
 name = "dioxus-devtools-types"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "dioxus-core 0.7.2",
  "serde",
@@ -451,7 +451,7 @@ dependencies = [
 [[package]]
 name = "dioxus-signals"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "dioxus-core 0.7.2",
  "futures-channel",
@@ -626,7 +626,7 @@ dependencies = [
 [[package]]
 name = "generational-box"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "parking_lot",
  "tracing",
@@ -876,7 +876,7 @@ dependencies = [
 [[package]]
 name = "manganis"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "const-serialize 0.7.2",
  "const-serialize 0.8.0",
@@ -887,7 +887,7 @@ dependencies = [
 [[package]]
 name = "manganis-core"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "const-serialize 0.7.2",
  "const-serialize 0.8.0",
@@ -898,7 +898,7 @@ dependencies = [
 [[package]]
 name = "manganis-macro"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "dunce",
  "macro-string",
@@ -1455,7 +1455,7 @@ dependencies = [
 [[package]]
 name = "subsecond"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "futures",
  "js-sys",
@@ -1485,7 +1485,7 @@ dependencies = [
 [[package]]
 name = "subsecond-types"
 version = "0.7.2"
-source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#de7b4c1161be3c40975887afed880c309f9d8dc8"
+source = "git+https://github.com/qouteall/dioxus?branch=wasm_mt_4#b9968ed03ba05abfd70c52bc0a94a32104ad94d2"
 dependencies = [
  "serde",
 ]
