@@ -20,7 +20,7 @@ self.onmessage = event => {
     // Rethrow to keep promise rejected and prevent execution of further commands:
     throw err;
   }).then(wasmExports => {
-    console.log("In then", wasmExports);
+    // console.log("In then", wasmExports);
     wasmExports.init_hotpatch_for_current_thread();
   });
 

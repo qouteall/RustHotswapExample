@@ -11,7 +11,7 @@ use manganis::{asset, Asset};
 use rayon::prelude::*;
 use std::io::Read;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::{io, mem};
 use subsecond::{JumpTable, PatchError};
@@ -50,6 +50,13 @@ extern "C" {
 #[wasm_bindgen]
 pub struct Scene {
     inner: raytracer::scene::Scene,
+}
+
+static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    // for testing TLS
+    static MY_THREAD_ID: usize = (NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed));
 }
 
 #[wasm_bindgen]
@@ -209,7 +216,11 @@ pub async fn start() {
 
         broadcast_to_workers(|| {
             subsecond::call(|| {
-                console_log!("Test patch data segment in worker");
+                console_log!("Before accessing TLS");
+
+                let thread_id = MY_THREAD_ID.with(|s| *s);
+
+                console_log!("Worker {}: Test patch data segment", thread_id);
             });
         });
     });
@@ -221,10 +232,13 @@ pub async fn start() {
     Reflect::set(&button, &"disabled".into(), &false.into());
 
     closure.forget();
+
+    // make main thread initialize thread id
+    MY_THREAD_ID.with(|s| *s);
 }
 
 #[cfg(not(debug_assertions))]
-fn init_hotpatch(on_hotpatch_callback: Box<dyn Fn()>) {
+fn init_hotpatch() {
     // empty in release
 }
 
