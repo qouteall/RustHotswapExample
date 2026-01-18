@@ -9,6 +9,8 @@ use futures::FutureExt;
 
 #[tokio::main]
 async fn main() {
+    dioxus_devtools::connect_subsecond();
+
     // https://github.com/DioxusLabs/dioxus/issues/4305#issuecomment-3204091426
     router_main().await;
 }
@@ -25,7 +27,7 @@ async fn router_main() {
     axum::serve(listener, app.clone()).await.unwrap()
 }
 
-async fn test_route() -> axum::response::Html<&'static str> {
+async fn test_route() -> axum::response::Html<String> {
     get_str().into()
 }
 
