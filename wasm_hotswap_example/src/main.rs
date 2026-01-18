@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-
+use std::sync::atomic::AtomicUsize;
 use dioxus_devtools::subsecond::apply_patch;
 use dioxus_devtools::{DevserverMsg};
 use wasm_bindgen::prelude::*;
@@ -28,6 +28,8 @@ pub fn start() {
     init_counter();
 }
 
+static SOME_VALUE: AtomicUsize = AtomicUsize::new(0);
+
 fn init_counter() {
     let window = web_sys::window().expect("no global `window` exists");
     let document = window.document().expect("should have a document on window");
@@ -47,10 +49,12 @@ fn init_counter() {
 
     let closure = Closure::<dyn FnMut()>::new(move || {
         subsecond::call(|| {
-            // *count_clone.borrow_mut() += 1;
+            *count_clone.borrow_mut() += 1;
             // *count_clone.borrow_mut() *= 2;
 
             display_clone.set_text_content(Some(&count_clone.borrow().to_string()));
+
+            console::log_1(&format!("Global mutable value addr {:?}..", (&SOME_VALUE) as *const AtomicUsize).into());
         })
     });
 
