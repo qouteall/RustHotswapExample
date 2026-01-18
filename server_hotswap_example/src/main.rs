@@ -1,17 +1,16 @@
 use std::env;
 use std::sync::{Arc, LazyLock, Mutex};
-
+use std::sync::atomic::AtomicUsize;
 use axum::{
     routing::{get, post},
 };
+use dioxus_devtools::subsecond;
 use futures::FutureExt;
 
 #[tokio::main]
 async fn main() {
     // https://github.com/DioxusLabs/dioxus/issues/4305#issuecomment-3204091426
-    let f =dioxus_devtools::serve_subsecond(router_main);
-    let mut f_boxed = f.boxed_local();
-    f_boxed.as_mut().await;
+    router_main().await;
 }
 
 
@@ -27,5 +26,13 @@ async fn router_main() {
 }
 
 async fn test_route() -> axum::response::Html<&'static str> {
-    "axum works!!!!".into()
+    get_str().into()
+}
+
+static TEST: AtomicUsize = AtomicUsize::new(0);
+
+fn get_str() -> String {
+    subsecond::call(|| {
+        format!("test {:?}", (&TEST) as *const AtomicUsize)
+    })
 }
