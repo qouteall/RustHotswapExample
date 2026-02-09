@@ -1,8 +1,8 @@
+use dioxus_devtools::subsecond::apply_patch;
+use dioxus_devtools::DevserverMsg;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::AtomicUsize;
-use dioxus_devtools::subsecond::apply_patch;
-use dioxus_devtools::{DevserverMsg};
 use wasm_bindgen::prelude::*;
 use web_sys::js_sys::JsString;
 use web_sys::{console, MessageEvent, WebSocket};
@@ -54,7 +54,14 @@ fn init_counter() {
 
             display_clone.set_text_content(Some(&count_clone.borrow().to_string()));
 
-            console::log_1(&format!("Global mutable value addr {:?}..", (&SOME_VALUE) as *const AtomicUsize).into());
+            console::log_1(
+                &format!(
+                    "test2 {:?} {:?}",
+                    (&SOME_VALUE) as *const AtomicUsize,
+                    (&external_data_crate::EXTERNAL_DATA) as *const AtomicUsize
+                )
+                .into(),
+            );
         })
     });
 

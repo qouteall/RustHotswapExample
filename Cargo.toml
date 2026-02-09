@@ -3,4 +3,5 @@ resolver = "2"
 members = [
     "wasm_hotswap_example",
     "server_hotswap_example",
+    "external_data_crate"
 ]

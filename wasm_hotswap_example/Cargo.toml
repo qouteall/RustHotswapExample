@@ -22,3 +22,5 @@ crossbeam-channel = "0.5.15"
 send_wrapper = "0.6.0"
 dioxus-cli-config = { version = "0.7.1", features = ["web"] }
 serde_json = { version = "1.0" }
+
+external_data_crate = {path = "../external_data_crate"}

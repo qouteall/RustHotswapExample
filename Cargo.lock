@@ -289,6 +289,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "external_data_crate"
+version = "0.1.0"
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -923,6 +927,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dioxus-devtools",
+ "external_data_crate",
  "futures",
  "log",
  "serde",
@@ -1386,6 +1391,7 @@ dependencies = [
  "crossbeam-channel",
  "dioxus-cli-config",
  "dioxus-devtools",
+ "external_data_crate",
  "send_wrapper",
  "serde_json",
  "subsecond",
